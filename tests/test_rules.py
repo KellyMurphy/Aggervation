@@ -352,13 +352,23 @@ def test_seven_kills_pegs_it_passes():
     assert green.pos.zone is Zone.BASE
 
 
-def test_seven_jumps_own_pegs_without_killing():
+def test_seven_sends_back_own_pegs_it_passes_too():
     game = new_game()
     place(game, "RED", 0, 10)
     own = place(game, "RED", 1, 12)
     (c,) = give(game, "7")
     game.play_card(c, Move(MoveKind.SPLIT, splits=((0, 7),)))
-    assert own.pos == PegPos.track(12)
+    assert own.pos.zone is Zone.BASE
+    assert "own peg 2" in game.last_action
+
+
+def test_seven_still_cannot_land_on_own_peg():
+    game = new_game()
+    place(game, "RED", 0, 10)
+    place(game, "RED", 1, 17)
+    place(game, "RED", 2, 50)
+    (c,) = give(game, "7")
+    assert Move(MoveKind.SPLIT, splits=((0, 7),)) not in game.legal_moves(c)
 
 
 def test_seven_must_use_all_steps():
@@ -412,17 +422,114 @@ def test_jack_skip_passes_on_when_skipped_player_lays_a_jack():
 
 # --- Winning ---
 
-def test_last_peg_home_wins():
-    game = new_game()
+def test_last_peg_home_wins_without_partners():
+    game = Game(rng=random.Random(0), partners=False)
+    for player in game.players:
+        player.hand = [card("A")]
+    game.current_idx = 0
     for n in range(3):
         place(game, "RED", n, 94 - n)
     place(game, "RED", 3, 89)
     (c,) = give(game, "2")
     game.play_card(c, fwd(3, 2))
     assert game.winner().color == "RED"
-    assert "WINS" in game.last_action
+    assert "RED WIN!" in game.last_action
     with pytest.raises(IllegalMove):
         game.play_card(game.players[1].hand[0])
+
+
+# --- Partners (Red & Blue, Green & Yellow) ---
+
+def all_home(game: Game, color: str, except_peg: int | None = None):
+    for n in range(4):
+        if n != except_peg:
+            place(game, color, n, 94 - n)
+
+
+def test_play_partners_pegs_once_yours_are_home():
+    game = new_game()
+    all_home(game, "RED")
+    blue = place(game, "BLUE", 0, 10)
+    (c,) = give(game, "5")
+    assert game.controlled_color() == "BLUE"
+    assert game.legal_moves(c) == [fwd(0, 5)]
+    game.play_card(c, fwd(0, 5))
+    assert blue.travelled == 15
+    assert "(for BLUE)" in game.last_action
+
+
+def test_own_pegs_first_while_any_are_out():
+    game = new_game()
+    all_home(game, "RED", except_peg=3)
+    place(game, "RED", 3, 40)
+    place(game, "BLUE", 0, 10)
+    (c,) = give(game, "5")
+    assert game.controlled_color() == "RED"
+    assert game.legal_moves(c) == [fwd(3, 5)]
+
+
+def test_can_bring_partners_peg_out_of_base():
+    game = new_game()
+    all_home(game, "RED")
+    (c,) = give(game, "K")
+    game.play_card(c, Move(MoveKind.ENTER, peg=0))
+    blue = game.player("BLUE").pegs[0]
+    assert blue.pos == PegPos.track(48)  # Blue's start
+    assert blue.blocking
+
+
+def test_seven_finishes_on_partners_pegs_after_last_peg_home():
+    game = new_game()
+    all_home(game, "RED", except_peg=3)  # slots 0-2 hold... see below
+    for n, t in ((0, 94), (1, 93), (2, 92)):
+        place(game, "RED", n, t)
+    place(game, "RED", 3, 89)  # 2 steps from the last free home slot (91)
+    blue = place(game, "BLUE", 0, 10)
+    (c,) = give(game, "7")
+    move = Move(MoveKind.SPLIT, splits=((3, 2),), partner="BLUE", partner_splits=((0, 5),))
+    assert move in game.legal_moves(c)
+    game.play_card(c, move)
+    assert game.player("RED").has_won()
+    assert blue.travelled == 15
+
+
+def test_seven_cannot_use_partner_unless_last_peg_gets_home():
+    game = new_game()
+    place(game, "RED", 0, 40)
+    place(game, "RED", 1, 89)
+    place(game, "BLUE", 0, 10)
+    (c,) = give(game, "7")
+    assert all(not m.partner_splits for m in game.legal_moves(c))
+
+
+def test_landing_on_partners_peg_sends_it_to_base():
+    game = new_game()
+    place(game, "RED", 0, 10)
+    blue = place(game, "BLUE", 0, 63)  # hole 15
+    (c,) = give(game, "5")
+    game.play_card(c, fwd(0, 5))
+    assert blue.pos.zone is Zone.BASE
+
+
+def test_player_with_pegs_home_folds_if_partner_cant_move():
+    game = new_game("YELLOW")
+    all_home(game, "RED")  # Blue's pegs are all in base
+    game.player("RED").hand = [card("5")]
+    (a,) = give(game, "A")
+    game.play_card(a, Move(MoveKind.ENTER, peg=0))
+    assert "RED" in game.folded
+
+
+def test_team_wins_when_partner_finishes():
+    game = new_game()
+    all_home(game, "RED")
+    for n in range(3):
+        place(game, "BLUE", n, 94 - n)
+    place(game, "BLUE", 3, 89)
+    (c,) = give(game, "2")
+    game.play_card(c, fwd(3, 2))  # Red brings Blue's last peg home
+    assert game.winner_names() == "RED & BLUE"
+    assert "RED & BLUE WIN!" in game.last_action
 
 
 # --- Whole games ---
@@ -504,3 +611,22 @@ def test_seven_split_obeys_home_rules():
     moves = game.legal_moves(c)
     assert Move(MoveKind.SPLIT, splits=((0, 2), (1, 5))) in moves
     assert all(steps <= 2 for m in moves for num, steps in m.splits if num == 0)
+
+
+def test_folded_players_are_tracked_until_next_hand():
+    game = new_game("YELLOW")
+    game.player("RED").hand = [card("5")]
+    (a,) = give(game, "A")
+    game.play_card(a, Move(MoveKind.ENTER, peg=0))
+    assert "RED" in game.folded
+    game._deal_hand()
+    assert game.folded == set()
+
+
+def test_last_moved_lists_pegs_that_moved():
+    game = new_game()
+    place(game, "RED", 0, 10)
+    green = place(game, "GREEN", 0, 86)  # hole 14
+    (c,) = give(game, "4")
+    game.play_card(c, fwd(0, 4))
+    assert game.last_moved == {("RED", 0), ("GREEN", 0)}

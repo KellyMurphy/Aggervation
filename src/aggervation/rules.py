@@ -7,8 +7,8 @@ House rules (see basics/rules.txt):
       lay a jack, the skip passes on. (Handled in game.py.)
   10  Swap one of your pegs in play with another peg in play. The only card
       that can move someone's blocking peg off its start.
-  7   Split 7 steps among your pegs. Opponent pegs you pass over go back to
-      base. Can't bring a peg out of base.
+  7   Split 7 steps among your pegs. Any peg you pass over (even your own)
+      goes back to base. Can't bring a peg out of base.
   6   Move one of your pegs backwards 6.
   Others move their face value (Q = 12).
   Start spot: a peg brought straight out of base with A/K blocks everything:
@@ -22,6 +22,13 @@ Other rules the house rules don't spell out:
     A 6 that leaves the peg on or before its home entry (e.g. backing up
     6 from its start) is a shortcut: the next move can turn into home.
   - A 7 must use all 7 steps.
+
+Partners (opposite seats: Red & Blue, Green & Yellow):
+  - You play your own pegs until all of them are home, then your partner's
+    (including bringing them out of base).
+  - A 7 that brings your last peg home may finish on your partner's pegs.
+  - Partner pegs are otherwise like anyone else's: landing on one sends it to base.
+  - A team wins when all 8 of its pegs are home.
 """
 
 from __future__ import annotations
@@ -65,6 +72,16 @@ class Move:
     steps: int = 0  # FORWARD / BACKWARD
     target: tuple[str, int] | None = None  # SWAP: (color, peg number) to trade places with
     splits: tuple[tuple[int, int], ...] = ()  # SPLIT: (peg number, steps), applied in order
+    # SPLIT with partners: once the 7 has brought your last peg home, the rest
+    # of it may move your partner's pegs. Applied after ``splits``.
+    partner: str | None = None
+    partner_splits: tuple[tuple[int, int], ...] = ()
+
+    def segments(self, color: str) -> list[tuple[str, int, int]]:
+        """A 7's parts as (color, peg number, steps), in order."""
+        return [(color, n, s) for n, s in self.splits] + [
+            (self.partner, n, s) for n, s in self.partner_splits if self.partner
+        ]
 
     def describe(self) -> str:
         if self.kind is MoveKind.ENTER:
@@ -76,8 +93,9 @@ class Move:
         if self.kind is MoveKind.SWAP:
             color, num = self.target
             return f"swapped peg {self.peg + 1} with {color} peg {num + 1}"
-        parts = ", ".join(f"peg {n + 1} x{s}" for n, s in self.splits)
-        return f"split 7: {parts}"
+        parts = [f"peg {n + 1} x{s}" for n, s in self.splits]
+        parts += [f"{self.partner} peg {n + 1} x{s}" for n, s in self.partner_splits]
+        return f"split 7: {', '.join(parts)}"
 
 
 # --- Geometry ---
@@ -152,7 +170,7 @@ def _move_forward(players: list[Player], peg: Peg, steps: int, kill_passed: bool
             if other.color == peg.color:
                 raise IllegalMove("You already have a peg there")
             send_to_base(players, other)
-        elif kill_passed and other.color != peg.color:
+        elif kill_passed:  # a 7 sends back every peg it passes, even your own
             send_to_base(players, other)
     peg.pos = position_after(peg.color, peg.travelled + steps)
     peg.travelled += steps
@@ -222,17 +240,26 @@ def apply_move(players: list[Player], color: str, move: Move) -> None:
         target_color, target_num = move.target
         _swap(own[move.peg], _player(players, target_color).pegs[target_num])
     elif kind is MoveKind.SPLIT:
-        if sum(s for _, s in move.splits) != SPLIT_TOTAL:
+        total = sum(s for _, s in move.splits) + sum(s for _, s in move.partner_splits)
+        if total != SPLIT_TOTAL:
             raise IllegalMove("A 7 must use all 7 steps")
         for num, steps in move.splits:
             _move_forward(players, own[num], steps, kill_passed=True)
+        if move.partner_splits:
+            if move.partner is None or not all(p.pos.zone is Zone.HOME for p in own):
+                raise IllegalMove("You can only move your partner's pegs once all yours are home")
+            partner_pegs = _player(players, move.partner).pegs
+            for num, steps in move.partner_splits:
+                _move_forward(players, partner_pegs[num], steps, kill_passed=True)
 
 
-def apply_partial_split(players: list[Player], color: str, splits) -> None:
-    """Apply the first part(s) of a 7 split, e.g. to preview it while the player is still choosing."""
-    own = _player(players, color).pegs
-    for num, steps in splits:
-        _move_forward(players, own[num], steps, kill_passed=True)
+def apply_partial_split(players: list[Player], segments) -> None:
+    """Apply the first part(s) of a 7, given as (color, peg number, steps).
+
+    Used to preview a 7 while the player is still choosing.
+    """
+    for color, num, steps in segments:
+        _move_forward(players, _player(players, color).pegs[num], steps, kill_passed=True)
 
 
 def copy_pegs(players: list[Player]) -> list[Player]:
@@ -251,11 +278,34 @@ def _compositions(total: int, parts: int) -> Iterator[tuple[int, ...]]:
             yield (first, *rest)
 
 
-def _split_candidates(peg_numbers: list[int]) -> Iterator[tuple[tuple[int, int], ...]]:
-    for count in range(1, len(peg_numbers) + 1):
+def _split_candidates(
+    peg_numbers: list[int], total: int = SPLIT_TOTAL
+) -> Iterator[tuple[tuple[int, int], ...]]:
+    for count in range(1, min(len(peg_numbers), total) + 1):
         for order in permutations(peg_numbers, count):
-            for parts in _compositions(SPLIT_TOTAL, count):
+            for parts in _compositions(total, count):
                 yield tuple(zip(order, parts))
+
+
+def _partner_seven_candidates(players: list[Player], color: str, partner: str) -> Iterator[Move]:
+    """7s that bring all your pegs home with part of the count, then move your partner's pegs."""
+    pegs = _player(players, color).pegs
+    if any(p.pos.zone is Zone.BASE for p in pegs):
+        return  # can't get every peg home this turn
+    in_play = [p.number for p in pegs]
+    partner_pegs = [p.number for p in _player(players, partner).pegs if p.pos.zone is not Zone.BASE]
+    for used in range(1, SPLIT_TOTAL):
+        for own_part in _split_candidates(in_play, used):
+            trial = copy_pegs(players)
+            try:
+                for num, steps in own_part:
+                    _move_forward(trial, _player(trial, color).pegs[num], steps, kill_passed=True)
+            except IllegalMove:
+                continue
+            if not all(p.pos.zone is Zone.HOME for p in _player(trial, color).pegs):
+                continue
+            for rest in _split_candidates(partner_pegs, SPLIT_TOTAL - used):
+                yield Move(MoveKind.SPLIT, splits=own_part, partner=partner, partner_splits=rest)
 
 
 def _is_legal(players: list[Player], color: str, move: Move) -> bool:
@@ -298,12 +348,33 @@ def _candidates(players: list[Player], color: str, card: Card) -> list[Move]:
     return candidates
 
 
-def legal_moves(players: list[Player], color: str, card: Card) -> list[Move]:
-    return [m for m in _candidates(players, color, card) if _is_legal(players, color, m)]
+def _all_candidates(
+    players: list[Player], color: str, card: Card, partner: str | None
+) -> Iterator[Move]:
+    yield from _candidates(players, color, card)
+    if partner and card.rank == SPLIT_RANK:
+        yield from _partner_seven_candidates(players, color, partner)
 
 
-def has_legal_move(players: list[Player], color: str, cards: list[Card]) -> bool:
+def legal_moves(
+    players: list[Player], color: str, card: Card, partner: str | None = None
+) -> list[Move]:
+    """Legal moves with ``card`` for ``color``'s pegs.
+
+    ``partner``: the partner whose pegs a 7 may finish on once all of
+    ``color``'s pegs are home.
+    """
+    return [
+        m for m in _all_candidates(players, color, card, partner) if _is_legal(players, color, m)
+    ]
+
+
+def has_legal_move(
+    players: list[Player], color: str, cards: list[Card], partner: str | None = None
+) -> bool:
     """True if any of ``cards`` has a legal move. Stops at the first one found."""
     return any(
-        _is_legal(players, color, m) for card in cards for m in _candidates(players, color, card)
+        _is_legal(players, color, m)
+        for card in cards
+        for m in _all_candidates(players, color, card, partner)
     )

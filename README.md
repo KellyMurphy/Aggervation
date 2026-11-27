@@ -7,21 +7,51 @@ The house rules are in [basics/rules.txt](basics/rules.txt) and printed on the b
 
 ## Running it
 
-Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and pygame for you).
+Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and everything else for you).
+
+## Playing online (website)
+
+```
+uv run aggervation-web
+```
+
+Then open http://localhost:8000.
+
+- **Start a new game** gives you a code like `XU8R-D4FG` and an invite link to send to up to 3 friends.
+- Friends enter the code (or open the link) to join the **waiting room**, where everyone can pick a seat.
+  The host can put computers in seats, switch partners on/off, and start the game. Empty seats become computers.
+- Each player sees the board and only their own cards. Any number of games can run at once, each with its own code.
+- Refreshing or reconnecting puts you back in your seat. If a player drops out, the computer covers their turns
+  after 30 seconds until they're back.
+
+Settings (environment variables): `PORT` (default 8000), `HOST` (default `0.0.0.0`),
+`AGGRAVATION_BOT_DELAY` (seconds before a computer moves, default 1).
+
+To host it, build the included `Dockerfile` on any service that runs containers. Games are kept in memory,
+so run a single instance; restarting the server ends games in progress.
+
+## Desktop version
 
 ```
 uv run aggervation
 ```
 
-## How to play
+### How to play
 
+- **Choose players:** click each seat to switch it between Human and Computer, then **Start game**.
+- **Partners:** players opposite each other are a team (Red & Blue vs Green & Yellow). Once all your pegs
+  are home you play your partner's. Switch partners off on the setup screen for every-player-alone games.
 - The current player's hand is shown in the middle of the board.
 - **Pick a card** (click it or press its number), then **click the peg** to move. Pegs you can move have a white ring.
 - **10:** click your peg, then the peg to swap with.
 - **7:** click a peg, then the numbered marker where it should go. Keep going until all 7 spaces are used.
 - **Esc** or right-click cancels a choice.
-- Players who can't play any card fold automatically until the next hand.
-- The last few moves are listed under the cards.
+- Players who can't play any card fold automatically until the next hand. The corner panels show each
+  player's cards left, who's folded, and the dealer.
+- Pegs moved by the last play have a coloured ring; the last few moves are listed under the cards.
+- **Computer turns** pause briefly so you can follow them; press **Space** to hurry them.
+- **Two or more people:** hands are hidden between turns. Pass the computer and click when ready.
+- **N** starts over (back to choosing players). After a win, click **Play again**.
 
 ## Tests
 
@@ -33,7 +63,13 @@ uv run --with pytest pytest
 
 | Path | What it is |
 | --- | --- |
-| `src/aggervation/main.py` | The window: drawing the board and handling clicks |
+| `src/aggervation/main.py` | The window: setup screen, turns, pass-the-screen, game over |
+| `src/aggervation/view.py` | Board geometry and drawing |
+| `src/aggervation/selection.py` | Turning clicks into a play (card, then peg) |
+| `src/aggervation/bot.py` | The computer player |
+| `src/aggervation/web/server.py` | The website: pages, creating games, live connections |
+| `src/aggervation/web/rooms.py` | Online games: codes, waiting room, seats, turns |
+| `src/aggervation/web/static/` | The web page (HTML, CSS, JavaScript) |
 | `src/aggervation/game.py` | Dealing, turn order, folding, jack skips, winning |
 | `src/aggervation/rules.py` | What each card allows and carrying out moves |
 | `src/aggervation/models.py` | Pegs, positions, players |
@@ -41,7 +77,7 @@ uv run --with pytest pytest
 | `src/aggervation/layout_data.py` | Hole positions, generated from the board art (don't edit) |
 | `tools/extract_layout.py` | Reads the board SVG and writes `layout_data.py` |
 | `basics/` | Board artwork (Illustrator + SVG) and the rules |
-| `tests/` | Tests for the layout, rules, game flow and clicking |
+| `tests/` | Tests for the layout, rules, game flow, clicking, the bot and the app |
 
 ## Changing the board art
 

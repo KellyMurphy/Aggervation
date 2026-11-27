@@ -1,0 +1,108 @@
+:root {
+  --bg: #282828;
+  --board: #c49a6c;
+  --ink: #231f20;
+  --muted: #bdb6ad;
+  --panel: #33302d;
+  --card: #faf8f0;
+  --red: #ed1c24;
+  --green: #009d48;
+  --blue: #034ea2;
+  --yellow: #ffd400;
+  font-family: "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
+  color: #eee;
+  background: var(--bg);
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+.hidden { display: none !important; }
+button {
+  font: inherit; cursor: pointer; border-radius: 8px; border: 1px solid #0006;
+  padding: 0.5em 1em; background: var(--card); color: var(--ink);
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--board); font-weight: 700; }
+input {
+  font: inherit; padding: 0.5em 0.7em; border-radius: 8px; border: 1px solid #0006;
+  background: #fff; color: var(--ink);
+}
+.error { color: #ff8a80; min-height: 1.2em; margin: 0.5em 0 0; }
+.hint { color: var(--muted); font-size: 0.9em; }
+
+/* Home + lobby panels */
+.card-panel {
+  max-width: 420px; margin: 6vh auto; padding: 1.5em; border-radius: 14px;
+  background: var(--panel); display: flex; flex-direction: column; gap: 0.9em;
+}
+.title { margin: 0; text-align: center; letter-spacing: 0.08em; color: var(--board); }
+h2 { margin: 0; }
+.field { display: flex; flex-direction: column; gap: 0.3em; }
+.divider { text-align: center; color: var(--muted); font-size: 0.9em; }
+.join-row { display: flex; gap: 0.5em; }
+.join-row input { flex: 1; text-transform: uppercase; letter-spacing: 0.15em; font-family: ui-monospace, Consolas, monospace; }
+
+.code-box { text-align: center; background: #0003; border-radius: 10px; padding: 0.8em; }
+.code-label { color: var(--muted); font-size: 0.85em; }
+.code { font: 700 2.2em ui-monospace, Consolas, monospace; letter-spacing: 0.12em; margin: 0.15em 0 0.4em; color: #fff; }
+
+.seats { display: flex; flex-direction: column; gap: 0.5em; }
+.seat {
+  display: flex; align-items: center; gap: 0.6em; padding: 0.55em 0.7em; border-radius: 10px;
+  background: #0003; border-left: 8px solid var(--seat);
+}
+.seat .who { flex: 1; }
+.seat .who .color { font-weight: 700; color: var(--seat-text); }
+.seat .who .name { color: #eee; }
+.seat.mine { outline: 2px solid #fff8; }
+.seat button { padding: 0.3em 0.7em; font-size: 0.85em; }
+.check { display: flex; gap: 0.5em; align-items: center; }
+
+/* Game table */
+#table {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 1em;
+  max-width: 1200px; margin: 0 auto; padding: 0.8em; align-items: start;
+}
+#board-wrap { width: 100%; max-width: calc(100vh - 1.6em); margin: 0 auto; }
+#board { width: 100%; height: auto; display: block; }
+#side { display: flex; flex-direction: column; gap: 0.7em; }
+.turn { font-size: 1.15em; font-weight: 700; }
+.hand { display: flex; gap: 0.5em; flex-wrap: wrap; min-height: 88px; }
+.playing-card {
+  width: 58px; height: 84px; border-radius: 8px; background: var(--card); color: var(--ink);
+  border: 1px solid var(--ink); font: 700 1.25em "Segoe UI Symbol", "Segoe UI", system-ui, sans-serif;
+  display: flex; align-items: center; justify-content: center; padding: 0; transition: transform 0.08s;
+}
+.playing-card.red-suit { color: #c8141e; }
+.playing-card.selected { transform: translateY(-8px); border: 3px solid var(--me, #fff); }
+.playing-card.playable:hover { transform: translateY(-5px); }
+.playing-card.dim { opacity: 0.55; }
+.card-back { background: repeating-linear-gradient(45deg, #783030, #783030 6px, #8a3a3a 6px, #8a3a3a 12px); cursor: default; }
+.prompt { color: #eee; min-height: 1.3em; }
+.over { background: var(--panel); padding: 0.9em; border-radius: 10px; text-align: center; }
+.players { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em; }
+.player {
+  background: var(--panel); border-radius: 8px; padding: 0.45em 0.6em; font-size: 0.88em;
+  border-left: 6px solid var(--seat);
+}
+.player.current { outline: 2px solid #fff; }
+.player .pname { font-weight: 700; color: var(--seat-text); }
+.player .pstat { color: var(--muted); }
+.log { margin: 0; padding-left: 1.2em; color: var(--muted); font-size: 0.85em; display: flex; flex-direction: column; gap: 0.15em; }
+.code-small { color: var(--muted); font-size: 0.8em; font-family: ui-monospace, Consolas, monospace; }
+
+/* Board pieces (SVG) */
+.hole { fill: none; stroke: #3c3228; stroke-width: 2.5; }
+.track-line { fill: none; stroke: #96785566; stroke-width: 3; }
+.peg { stroke: #0007; stroke-width: 2; }
+.peg.clickable, .marker { cursor: pointer; }
+.ring-select { fill: none; stroke: #fff; stroke-width: 5; pointer-events: none; }
+.ring-chosen { fill: none; stroke: var(--ink); stroke-width: 5; pointer-events: none; }
+.ring-last { fill: none; stroke-width: 3; pointer-events: none; }
+.marker circle { fill: #fff; stroke-width: 4; }
+.marker text { font: 700 18px system-ui, sans-serif; fill: var(--ink); pointer-events: none; }
+
+@media (max-width: 820px) {
+  #table { grid-template-columns: 1fr; padding: 0.4em; }
+  .card-panel { margin: 3vh 0.6em; }
+}

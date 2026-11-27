@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aggravation</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main id="app">
+    <!-- Home: enter a name, start a game or join one with a code -->
+    <section id="home" class="screen card-panel">
+      <h1 class="title">AGGRAVATION</h1>
+      <label class="field">Your name
+        <input id="name" maxlength="20" autocomplete="nickname" placeholder="e.g. Kelly">
+      </label>
+      <button id="create" class="primary">Start a new game</button>
+      <div class="divider"><span>or join a friend's game</span></div>
+      <div class="join-row">
+        <input id="code-input" maxlength="9" placeholder="XU8R-D4FG" autocapitalize="characters" spellcheck="false">
+        <button id="join">Join</button>
+      </div>
+      <p id="home-error" class="error" role="alert"></p>
+    </section>
+
+    <!-- Waiting room -->
+    <section id="lobby" class="screen card-panel hidden">
+      <h2>Waiting room</h2>
+      <div class="code-box">
+        <div class="code-label">Game code</div>
+        <div id="code" class="code"></div>
+        <button id="copy-link">Copy invite link</button>
+        <div id="copied" class="hint"></div>
+      </div>
+      <p class="hint">Send the code (or link) to your friends. Up to 4 players; empty seats are played by the computer.</p>
+      <div id="seats" class="seats"></div>
+      <label id="partners-row" class="check">
+        <input type="checkbox" id="partners"> Partners: Red &amp; Blue vs Green &amp; Yellow
+      </label>
+      <button id="start" class="primary">Start game</button>
+      <p id="lobby-note" class="hint"></p>
+      <p id="watchers" class="hint"></p>
+      <p id="lobby-error" class="error" role="alert"></p>
+    </section>
+
+    <!-- The game -->
+    <section id="table" class="screen hidden">
+      <div id="board-wrap"><svg id="board" role="img" aria-label="Game board"></svg></div>
+      <aside id="side">
+        <div id="turn" class="turn"></div>
+        <div id="hand" class="hand"></div>
+        <div id="prompt" class="prompt"></div>
+        <p id="table-error" class="error" role="alert"></p>
+        <div id="over" class="over hidden">
+          <h2 id="winner"></h2>
+          <button id="again" class="primary">Back to waiting room</button>
+          <p id="again-note" class="hint"></p>
+        </div>
+        <div id="players" class="players"></div>
+        <ol id="log" class="log"></ol>
+        <div class="code-small">Game <span id="table-code"></span></div>
+      </aside>
+    </section>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>

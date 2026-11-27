@@ -142,10 +142,31 @@ def test_peg_at_finds_pegs_by_zone():
     assert game.peg_at(PegPos.track(5 + 96)) is red.pegs[1]  # wraps around
 
 
-def test_winner_when_all_pegs_home():
-    game = make_game()
+def test_without_partners_one_player_home_wins():
+    game = Game(rng=random.Random(1), partners=False)
     yellow = game.player("YELLOW")
     for n, peg in enumerate(yellow.pegs):
         peg.pos = PegPos.home(n)
     assert yellow.pegs_in(Zone.HOME) == yellow.pegs
     assert game.winner() is yellow
+
+
+def test_with_partners_both_must_be_home():
+    game = make_game()
+    for color in ("GREEN", "YELLOW"):
+        for n, peg in enumerate(game.player(color).pegs):
+            peg.pos = PegPos.home(n)
+            if color == "GREEN":
+                break  # Green still has pegs out
+    assert game.winner() is None
+    for n, peg in enumerate(game.player("GREEN").pegs):
+        peg.pos = PegPos.home(n)
+    assert {p.color for p in game.winners()} == {"GREEN", "YELLOW"}
+    assert game.winner_names() == "GREEN & YELLOW"
+
+
+def test_partners_sit_opposite():
+    game = make_game()
+    assert game.partner_of(game.player("RED")).color == "BLUE"
+    assert game.partner_of(game.player("GREEN")).color == "YELLOW"
+    assert Game(rng=random.Random(1), partners=False).partner_of(game.player("RED")) is None
