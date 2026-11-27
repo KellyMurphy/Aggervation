@@ -27,6 +27,9 @@ Then open http://localhost:8000.
 Settings (environment variables): `PORT` (default 8000), `HOST` (default `0.0.0.0`),
 `AGGRAVATION_BOT_DELAY` (seconds before a computer moves, default 1).
 
+With Docker: `docker compose up --build -d`, then open http://localhost:8000 (`docker compose down` stops it;
+set `AGGRAVATION_PORT=8080` to use another port).
+
 To host it, build the included `Dockerfile` on any service that runs containers. Games are kept in memory,
 so run a single instance; restarting the server ends games in progress.
 
