@@ -1,406 +1,345 @@
+"""The Aggravation window: choose players, play, pass the screen, play again."""
+
+import random
 import sys
 
 import pygame
 
-from .game import HAND_SIZES, PLAYER_ORDER, Game, Peg, PegPos, Player, Zone
-from .layout_data import PLAYERS, TRACK, VIEWBOX
-from .rules import SPLIT_RANK, SPLIT_TOTAL, SWAP_RANK, IllegalMove, Move, MoveKind
-from .rules import apply_partial_split, copy_pegs, position_after
+from .bot import choose_play
+from .game import HAND_SIZES, PLAYER_ORDER, Game
+from .selection import Selection
+from .view import (
+    BOARD_CENTER,
+    COLOR_BG,
+    COLOR_BOARD,
+    COLOR_LOG,
+    COLOR_TEXT,
+    HEIGHT,
+    PLAYER_COLORS,
+    WIDTH,
+    blit_centered,
+    card_at,
+    card_rects,
+    draw_board,
+    draw_card,
+    draw_card_back,
+    draw_corner_text,
+    draw_destinations,
+    peg_under,
+)
 
-# --- Configuration ---
-WIDTH, HEIGHT = 800, 800
-MARGIN = 10
-HOLE_RES = 10  # Visual size of the hole
-
-# Colors
-COLOR_BG = (40, 40, 40)
-COLOR_BOARD = (196, 154, 108)  # wood tone from the SVG
-COLOR_TRACK = (60, 50, 40)
-COLOR_LINE = (150, 120, 85)
-COLOR_TEXT = (35, 31, 32)
-COLOR_LOG = (80, 62, 45)
-COLOR_SELECTABLE = (255, 255, 255)
-PLAYER_COLORS = {
-    "RED": (237, 28, 36),
-    "GREEN": (0, 157, 72),
-    "BLUE": (3, 78, 162),
-    "YELLOW": (255, 212, 0),
-}
-SCALE = (min(WIDTH, HEIGHT) - 2 * MARGIN) / max(VIEWBOX)
-OFFSET_X = (WIDTH - VIEWBOX[0] * SCALE) / 2
-OFFSET_Y = (HEIGHT - VIEWBOX[1] * SCALE) / 2
-
-
-def to_screen(p):
-    """Map an SVG coordinate to window pixels."""
-    return int(OFFSET_X + p[0] * SCALE), int(OFFSET_Y + p[1] * SCALE)
+HUMAN, COMPUTER = "Human", "Computer"
+BOT_DELAY_MS = 900  # pause before each computer move so you can follow along
+PANEL_W, ROW_H = 300, 40
+COLOR_SEAT_TEXT = (220, 220, 220)
 
 
-MAIN_TRACK_COORDS = [to_screen(p) for p in TRACK]
-PLAYER_BASES = {c: [to_screen(p) for p in PLAYERS[c]["base"]] for c in PLAYER_ORDER}
-PLAYER_HOMES = {c: [to_screen(p) for p in PLAYERS[c]["home"]] for c in PLAYER_ORDER}
-START_INDEX_COLOR = {PLAYERS[c]["start_index"]: c for c in PLAYER_ORDER}
-BOARD_CENTER = to_screen((VIEWBOX[0] / 2, VIEWBOX[1] / 2))
-BOARD_RADIUS = int(min(VIEWBOX) / 2 * SCALE)
-
-CARD_W, CARD_H, CARD_GAP = 50, 72, 8
-CARD_FACE = (250, 248, 240)
-SUIT_RED = (200, 20, 30)
-SUIT_BLACK = (20, 20, 20)
+def setup_rects() -> tuple[dict[str, pygame.Rect], pygame.Rect]:
+    """Click targets on the setup screen: one per seat, plus Start."""
+    top = BOARD_CENTER[1] - 90
+    seats = {
+        color: pygame.Rect(BOARD_CENTER[0] - PANEL_W // 2, top + i * (ROW_H + 8), PANEL_W, ROW_H)
+        for i, color in enumerate(PLAYER_ORDER)
+    }
+    start = pygame.Rect(BOARD_CENTER[0] - 90, top + 4 * (ROW_H + 8) + 12, 180, 44)
+    return seats, start
 
 
-def screen_pos(color: str, pos: PegPos):
-    """Window pixels of a hole. Base and home holes belong to ``color``."""
-    if pos.zone is Zone.BASE:
-        return PLAYER_BASES[color][pos.index]
-    if pos.zone is Zone.HOME:
-        return PLAYER_HOMES[color][pos.index]
-    return MAIN_TRACK_COORDS[pos.index]
+def partners_rect() -> pygame.Rect:
+    _, start = setup_rects()
+    return pygame.Rect(BOARD_CENTER[0] - 140, start.bottom + 10, 280, 30)
 
 
-def peg_screen_pos(peg: Peg):
-    return screen_pos(peg.color, peg.pos)
+def play_again_rect() -> pygame.Rect:
+    return pygame.Rect(BOARD_CENTER[0] - 90, BOARD_CENTER[1] + 20, 180, 44)
 
 
-def near(a, b, radius=HOLE_RES + 4) -> bool:
-    return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 <= radius**2
+def draw_button(screen, font, rect, text, fill, ink=COLOR_TEXT, hover=False):
+    pygame.draw.rect(screen, fill, rect, border_radius=8)
+    pygame.draw.rect(screen, COLOR_TEXT, rect, 3 if hover else 1, border_radius=8)
+    label = font.render(text, True, ink)
+    screen.blit(label, label.get_rect(center=rect.center))
 
 
-def peg_under(players: list[Player], pos) -> Peg | None:
-    for player in players:
-        for peg in player.pegs:
-            if near(peg_screen_pos(peg), pos):
-                return peg
-    return None
+class App:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
+        pygame.display.set_caption("Aggravation")
+        self.clock = pygame.time.Clock()
+        # Segoe UI Symbol has the card suit glyphs on Windows.
+        self.font = pygame.font.SysFont("Segoe UI Symbol,Arial", 20, bold=True)
+        self.card_font = pygame.font.SysFont("Segoe UI Symbol,Arial", 22, bold=True)
+        self.small = pygame.font.SysFont("Segoe UI Symbol,Arial", 15)
+        self.small_bold = pygame.font.SysFont("Segoe UI Symbol,Arial", 15, bold=True)
+        self.title_font = pygame.font.SysFont("Segoe UI Symbol,Arial", 34, bold=True)
 
+        self.controllers = {c: (HUMAN if c == "RED" else COMPUTER) for c in PLAYER_ORDER}
+        self.partners = True  # opposite seats play as a team
+        self.rng = random.Random()
+        self.state = "setup"  # setup -> play -> over -> setup ...
+        self.game = Game()  # shown behind the setup screen
+        self.sel = Selection(self.game)
+        self.revealed_for: str | None = None  # whose hand is showing (when hands are hidden)
+        self.bot_ready_at = 0
 
-# --- Choosing a play ---
+    # --- Who's playing ---
 
-class Selection:
-    """What the current player has picked so far this turn: a card, then peg(s)."""
-
-    def __init__(self, game: Game):
-        self.game = game
-        self.reset()
-
-    def reset(self, message: str = ""):
-        self.card_idx: int | None = None
-        self.moves: list[Move] = []
-        self.swap_from: int | None = None  # 10: own peg chosen, waiting for partner
-        self.split: list[tuple[int, int]] = []  # 7: segments chosen so far
-        self.split_peg: int | None = None  # 7: peg chosen, waiting for a step count
-        self.message = message
+    def is_human(self, color: str) -> bool:
+        return self.controllers[color] == HUMAN
 
     @property
-    def color(self) -> str:
+    def human_count(self) -> int:
+        return sum(self.is_human(c) for c in PLAYER_ORDER)
+
+    @property
+    def current(self) -> str:
         return self.game.current_player.color
 
-    @property
-    def card(self):
-        return None if self.card_idx is None else self.game.current_player.hand[self.card_idx]
+    def needs_pass_screen(self) -> bool:
+        """With 2+ people sharing the screen, hide the hand until the right person is looking."""
+        return self.human_count >= 2 and self.is_human(self.current) and self.revealed_for != self.current
 
-    # The board as the player sees it: with a 7's chosen segments already moved.
-    def preview_players(self) -> list[Player]:
-        if not self.split:
-            return self.game.players
-        players = copy_pegs(self.game.players)
-        apply_partial_split(players, self.color, self.split)
-        return players
+    def hand_visible(self) -> bool:
+        return self.is_human(self.current) and not self.needs_pass_screen()
 
-    def _split_continuations(self) -> list[Move]:
-        n = len(self.split)
-        return [m for m in self.moves if list(m.splits[:n]) == self.split and len(m.splits) > n]
+    # --- State changes ---
 
-    def selectable(self) -> set[tuple[str, int]]:
-        """Pegs (color, number) the player may click next."""
-        if self.card is None:
-            return set()
-        if self.card.rank == SWAP_RANK:
-            if self.swap_from is None:
-                return {(self.color, m.peg) for m in self.moves if m.peg is not None}
-            return {m.target for m in self.moves if m.peg == self.swap_from and m.target}
-        if self.card.rank == SPLIT_RANK:
-            if self.split_peg is not None:
-                return {(self.color, self.split_peg)}
-            return {(self.color, m.splits[len(self.split)][0]) for m in self._split_continuations()}
-        result = {(self.color, m.peg) for m in self.moves if m.peg is not None}
-        if any(m.kind is MoveKind.ENTER for m in self.moves):
-            pegs = self.game.current_player.pegs
-            result |= {(self.color, p.number) for p in pegs if p.pos.zone is Zone.BASE}
-        return result
+    def start_game(self):
+        self.game = Game(partners=self.partners)
+        self.sel = Selection(self.game)
+        self.revealed_for = None
+        self.state = "play"
+        self.after_play()
 
-    def split_step_options(self) -> list[int]:
-        n = len(self.split)
-        return sorted(
-            {m.splits[n][1] for m in self._split_continuations() if m.splits[n][0] == self.split_peg}
-        )
+    def after_play(self):
+        """Called after every play (and at the start): set up the next turn."""
+        self.bot_ready_at = pygame.time.get_ticks() + BOT_DELAY_MS
+        if self.game.winner():
+            self.state = "over"
 
-    def split_destinations(self) -> list[tuple[int, tuple[int, int]]]:
-        """For a 7: (steps, screen position) of each hole the chosen peg can reach."""
-        if self.split_peg is None:
-            return []
-        peg = next(p for pl in self.preview_players() for p in pl.pegs
-                   if (p.color, p.number) == (self.color, self.split_peg))
-        result = []
-        for steps in self.split_step_options():
-            dest = position_after(self.color, peg.travelled + steps)
-            if dest is not None:
-                result.append((steps, screen_pos(self.color, dest)))
-        return result
+    # --- Events ---
 
-    # --- Input ---
+    def handle(self, event):
+        if event.type == pygame.QUIT:
+            pygame.quit()
+            sys.exit()
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_n and self.state != "setup":
+            self.state = "setup"
+            return
+        getattr(self, f"handle_{self.state}")(event)
 
-    def click_card(self, idx: int):
+    def handle_setup(self, event):
+        if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE):
+            self.start_game()
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        seats, start = setup_rects()
+        for color, rect in seats.items():
+            if rect.collidepoint(event.pos):
+                self.controllers[color] = COMPUTER if self.is_human(color) else HUMAN
+        if partners_rect().collidepoint(event.pos):
+            self.partners = not self.partners
+        if start.collidepoint(event.pos):
+            self.start_game()
+
+    def handle_over(self, event):
+        clicked = event.type == pygame.MOUSEBUTTONDOWN and play_again_rect().collidepoint(event.pos)
+        if clicked or (event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_SPACE)):
+            self.state = "setup"
+
+    def handle_play(self, event):
+        if not self.is_human(self.current):
+            # Space hurries the computer along.
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                self.bot_ready_at = 0
+            return
+        if self.needs_pass_screen():
+            if event.type == pygame.MOUSEBUTTONDOWN or (
+                event.type == pygame.KEYDOWN and event.key in (pygame.K_SPACE, pygame.K_RETURN)
+            ):
+                self.revealed_for = self.current
+            return
+
+        sel, game = self.sel, self.game
+        before = (game.current_idx, len(game.log), game.hand_number, game.deal_number)
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+            sel.reset()
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            idx = card_at(game, event.pos)
+            if idx is not None:
+                sel.click_card(idx)
+            elif not sel.click_board(event.pos):
+                peg = peg_under(sel.preview_players(), event.pos)
+                if peg:
+                    sel.click_peg(peg)
+        elif event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                sel.reset()
+            elif pygame.K_1 <= event.key <= pygame.K_9:
+                n = event.key - pygame.K_0
+                if sel.split_peg is not None:
+                    sel.choose_split_steps(n)
+                else:
+                    sel.click_card(n - 1)
+        if (game.current_idx, len(game.log), game.hand_number, game.deal_number) != before:
+            self.after_play()
+
+    def update(self):
+        if self.state != "play" or self.is_human(self.current):
+            return
+        if pygame.time.get_ticks() >= self.bot_ready_at:
+            self.game.play_card(*choose_play(self.game, self.rng))
+            self.sel.reset()
+            self.after_play()
+
+    # --- Drawing ---
+
+    def draw(self):
+        screen, game, sel = self.screen, self.game, self.sel
+        screen.fill(COLOR_BG)
+
+        if self.state == "setup":
+            draw_board(screen, game.players)
+            self.draw_setup()
+            return
+
+        playing = self.state == "play" and self.hand_visible()
+        players = sel.preview_players() if playing else game.players
+        chosen = set()
+        if playing and sel.swap_from is not None:
+            chosen.add((sel.color, sel.swap_from))
+        if playing and sel.split_peg is not None:
+            chosen.add(sel.split_peg)
+        selectable = (sel.selectable() - chosen) if playing else set()
+        draw_board(screen, players, selectable, chosen, game.last_moved)
+        if playing:
+            draw_destinations(screen, self.small, sel.split_destinations(), sel.color)
+        self.draw_seats()
+        self.draw_center()
+
+    def draw_setup(self):
+        screen = self.screen
+        seats, start = setup_rects()
+        panel = pygame.Rect(0, 0, PANEL_W + 60, 420)
+        panel.center = (BOARD_CENTER[0], BOARD_CENTER[1] + 28)
+        pygame.draw.rect(screen, COLOR_BOARD, panel, border_radius=12)
+        pygame.draw.rect(screen, COLOR_TEXT, panel, 2, border_radius=12)
+        blit_centered(screen, self.title_font, "AGGRAVATION", COLOR_TEXT, panel.top + 14)
+        blit_centered(screen, self.small, "Click a seat to switch Human / Computer", COLOR_TEXT, panel.top + 58)
+        mouse = pygame.mouse.get_pos()
+        for color, rect in seats.items():
+            label = f"{color.title()}:  {self.controllers[color]}"
+            draw_button(screen, self.font, rect, label, PLAYER_COLORS[color],
+                        ink=(255, 255, 255) if color != "YELLOW" else COLOR_TEXT,
+                        hover=rect.collidepoint(mouse))
+        draw_button(screen, self.font, start, "Start game", (250, 248, 240), hover=start.collidepoint(mouse))
+        prect = partners_rect()
+        text = "Partners: Red & Blue vs Green & Yellow" if self.partners else "Partners: off (every player alone)"
+        draw_button(screen, self.small, prect, text, COLOR_BOARD, hover=prect.collidepoint(mouse))
+
+    def draw_seats(self):
         game = self.game
-        hand = game.current_player.hand
-        if idx >= len(hand):
-            return
-        if game.skip_pending:
-            self._play(hand[idx], None)
-            return
-        if idx == self.card_idx:
-            self.reset()
-            return
-        moves = game.legal_moves(hand[idx])
-        if not moves:
-            self.reset(f"{hand[idx].label} can't move right now - pick another card")
-            return
-        self.reset()
-        self.card_idx, self.moves = idx, moves
-        self.message = self._prompt()
-
-    def click_peg(self, peg: Peg):
-        key = (peg.color, peg.number)
-        if self.split_peg is not None and key == (self.color, self.split_peg):
-            self.split_peg = None
-            self.message = self._prompt()
-            return
-        if self.card is None or key not in self.selectable():
-            return
-        rank = self.card.rank
-        if rank == SWAP_RANK:
-            if self.swap_from is None:
-                self.swap_from = peg.number
-                self.message = "Now click the peg to swap places with"
+        for player in game.players:
+            color = player.color
+            # Lighten the player colour so it reads on the dark background.
+            ink = tuple(int(v + (255 - v) * 0.35) for v in PLAYER_COLORS[color])
+            name = ("▶ " if color == self.current and self.state == "play" else "") + color.title()
+            if self.is_human(color):
+                who = "You" if self.human_count == 1 else "Human"
             else:
-                move = next(m for m in self.moves if m.peg == self.swap_from and m.target == key)
-                self._play(self.card, move)
-        elif rank == SPLIT_RANK:
-            self.split_peg = peg.number
-            options = self.split_step_options()
-            if len(options) == 1:
-                self.choose_split_steps(options[0])
+                who = "Computer"
+            if game.dealer is player:
+                who += ", dealer"
+            partner = game.partner_of(player)
+            if partner:
+                control = game.controlled_color(player)
+                team_line = f"moving {control.title()}'s pegs" if control != color else f"partner: {partner.color.title()}"
+            if player in game.winners():
+                status = "WINNER"
+            elif player.has_won():
+                status = "all pegs home"
+            elif color in game.folded:
+                status = "folded"
+            elif player.hand:
+                status = f"{len(player.hand)} cards"
             else:
-                self.message = "Click where this peg goes (or press the number)"
-        else:
-            if peg.pos.zone is Zone.BASE:
-                move = next(m for m in self.moves if m.kind is MoveKind.ENTER)
+                status = "out of cards"
+            lines = [(name, ink), (who, COLOR_SEAT_TEXT), (status, COLOR_SEAT_TEXT)]
+            if partner:
+                lines.append((team_line, COLOR_SEAT_TEXT))
+            draw_corner_text(self.screen, self.small_bold, color, lines)
+
+    def draw_center(self):
+        screen, game, sel = self.screen, self.game, self.sel
+        player = game.current_player
+        pcolor = PLAYER_COLORS[player.color]
+        small = self.small
+        y = BOARD_CENTER[1] - 110
+        blit_centered(screen, self.font, f"Deal {game.deal_number}, hand {game.hand_number + 1} of {len(HAND_SIZES)}", COLOR_TEXT, y)
+
+        winner = game.winner()
+        if self.state == "over" and winner:
+            names = game.winner_names()
+            verb = "WIN!" if " & " in names else "WINS!"
+            blit_centered(screen, self.title_font, f"{names} {verb}", PLAYER_COLORS[winner.color], y + 36)
+            rect = play_again_rect()
+            draw_button(screen, self.font, rect, "Play again", (250, 248, 240),
+                        hover=rect.collidepoint(pygame.mouse.get_pos()))
+            self.draw_log(rect.bottom + 16)
+            return
+
+        turn = f"Turn: {player.color}"
+        control = game.controlled_color(player)
+        if control != player.color:
+            turn += f" (moving {control}'s pegs)"
+        blit_centered(screen, self.font, turn, pcolor, y + 28)
+        rects = card_rects(len(player.hand))
+        prompt_y = card_rects(1)[0].bottom + 26
+
+        if self.hand_visible():
+            mouse = pygame.mouse.get_pos()
+            for i, (card, rect) in enumerate(zip(player.hand, rects)):
+                selected = i == sel.card_idx
+                lifted = selected or rect.collidepoint(mouse)
+                r = rect.move(0, -8) if lifted else rect
+                draw_card(screen, self.card_font, card, r, pcolor if lifted else COLOR_TEXT,
+                          4 if selected else (3 if lifted else 1))
+                key = small.render(str(i + 1), True, COLOR_TEXT)
+                screen.blit(key, key.get_rect(midtop=(rect.centerx, rect.bottom + 4)))
+            if game.skip_pending:
+                prompt = "Skipped by a jack! Pick a card to lay without moving"
             else:
-                move = next(m for m in self.moves if m.peg == peg.number)
-            self._play(self.card, move)
-
-    def click_board(self, pos) -> bool:
-        """Handle a click on a 7's destination marker. True if one was hit."""
-        for steps, spot in self.split_destinations():
-            if near(spot, pos):
-                self.choose_split_steps(steps)
-                return True
-        return False
-
-    def choose_split_steps(self, steps: int):
-        if self.split_peg is None or steps not in self.split_step_options():
-            return
-        self.split.append((self.split_peg, steps))
-        self.split_peg = None
-        done = next((m for m in self.moves if list(m.splits) == self.split), None)
-        if done:
-            self._play(self.card, done)
+                prompt = sel.message or "Pick a card to play (click or press its number)"
         else:
-            self.message = self._prompt()
+            for rect in rects:
+                draw_card_back(screen, rect)
+            if self.needs_pass_screen():
+                prompt = f"Pass to {player.color.title()} - click when ready"
+            else:
+                prompt = f"{player.color.title()} (computer) is thinking...  Space: hurry"
+        blit_centered(screen, small, prompt, COLOR_TEXT, prompt_y)
+        self.draw_log(prompt_y + 26)
 
-    def _prompt(self) -> str:
-        card = self.card
-        if card is None:
-            return ""
-        rank = card.rank
-        if rank == SWAP_RANK:
-            return "10: click your peg to swap"
-        if rank == SPLIT_RANK:
-            left = SPLIT_TOTAL - sum(s for _, s in self.split)
-            return f"7: click a peg to move ({left} steps left)"
-        return f"{card.label}: click a peg to move"
+    def draw_log(self, y):
+        for line in self.game.log[-3:]:
+            blit_centered(self.screen, self.small, line, COLOR_LOG, y)
+            y += 19
 
-    def _play(self, card, move):
-        try:
-            self.game.play_card(card, move)
-        except IllegalMove as e:
-            self.reset(str(e))
-            return
-        self.reset()
+    # --- Main loop ---
 
-
-# --- Drawing ---
-
-def draw_board(screen, players: list[Player], selectable: set, chosen: set):
-    pygame.draw.circle(screen, COLOR_BOARD, BOARD_CENTER, BOARD_RADIUS)
-
-    n = len(MAIN_TRACK_COORDS)
-    for i, pos in enumerate(MAIN_TRACK_COORDS):
-        pygame.draw.line(screen, COLOR_LINE, pos, MAIN_TRACK_COORDS[(i + 1) % n], 2)
-    for i, pos in enumerate(MAIN_TRACK_COORDS):
-        start_color = START_INDEX_COLOR.get(i)
-        if start_color:
-            pygame.draw.circle(screen, PLAYER_COLORS[start_color], pos, HOLE_RES + 2)
-            pygame.draw.circle(screen, (255, 255, 255), pos, HOLE_RES + 2, 1)
-        else:
-            pygame.draw.circle(screen, COLOR_TRACK, pos, HOLE_RES, 2)
-
-    for color in PLAYER_ORDER:
-        for pos in PLAYER_BASES[color]:
-            pygame.draw.circle(screen, PLAYER_COLORS[color], pos, HOLE_RES, 1)
-        for pos in PLAYER_HOMES[color]:
-            pygame.draw.circle(screen, PLAYER_COLORS[color], pos, HOLE_RES, 2)
-
-    for player in players:
-        for peg in player.pegs:
-            pos = peg_screen_pos(peg)
-            key = (peg.color, peg.number)
-            pygame.draw.circle(screen, PLAYER_COLORS[peg.color], pos, HOLE_RES - 3)
-            pygame.draw.circle(screen, (255, 255, 255), (pos[0] - 2, pos[1] - 2), 2)
-            if peg.blocking:
-                pygame.draw.circle(screen, COLOR_TEXT, pos, HOLE_RES - 3, 2)
-            if key in chosen:
-                pygame.draw.circle(screen, COLOR_TEXT, pos, HOLE_RES + 4, 3)
-            elif key in selectable:
-                pygame.draw.circle(screen, COLOR_SELECTABLE, pos, HOLE_RES + 4, 3)
-
-
-def draw_destinations(screen, font, destinations, color):
-    for steps, (x, y) in destinations:
-        pygame.draw.circle(screen, COLOR_SELECTABLE, (x, y), HOLE_RES + 2)
-        pygame.draw.circle(screen, PLAYER_COLORS[color], (x, y), HOLE_RES + 2, 3)
-        label = font.render(str(steps), True, COLOR_TEXT)
-        screen.blit(label, label.get_rect(center=(x, y)))
-
-
-def card_rects(count: int) -> list[pygame.Rect]:
-    """Screen rectangles for a hand of ``count`` cards, centred on the board."""
-    total = count * CARD_W + (count - 1) * CARD_GAP
-    left = BOARD_CENTER[0] - total // 2
-    top = BOARD_CENTER[1] - 10
-    return [pygame.Rect(left + i * (CARD_W + CARD_GAP), top, CARD_W, CARD_H) for i in range(count)]
-
-
-def card_at(game: Game, pos) -> int | None:
-    """Index of the current player's card under the mouse, if any."""
-    for i, rect in enumerate(card_rects(len(game.current_player.hand))):
-        if rect.collidepoint(pos):
-            return i
-    return None
-
-
-def blit_centered(screen, font, text, color, y):
-    surf = font.render(text, True, color)
-    screen.blit(surf, (BOARD_CENTER[0] - surf.get_width() // 2, y))
-
-
-def draw_panel(screen, fonts, game: Game, sel: Selection, mouse_pos):
-    font, card_font, small = fonts
-    player = game.current_player
-    pcolor = PLAYER_COLORS[player.color]
-    winner = game.winner()
-
-    y = BOARD_CENTER[1] - 110
-    blit_centered(screen, font, f"Deal {game.deal_number}, hand {game.hand_number + 1} of {len(HAND_SIZES)}", COLOR_TEXT, y)
-    blit_centered(screen, font, f"Dealer: {game.dealer.color}", PLAYER_COLORS[game.dealer.color], y + 28)
-    if winner:
-        blit_centered(screen, font, f"{winner.color} WINS!", PLAYER_COLORS[winner.color], y + 56)
-    else:
-        blit_centered(screen, font, f"Turn: {player.color}", pcolor, y + 56)
-
-        for i, (card, rect) in enumerate(zip(player.hand, card_rects(len(player.hand)))):
-            lifted = i == sel.card_idx or rect.collidepoint(mouse_pos)
-            r = rect.move(0, -8) if lifted else rect
-            pygame.draw.rect(screen, CARD_FACE, r, border_radius=6)
-            selected = i == sel.card_idx
-            pygame.draw.rect(screen, pcolor if lifted else COLOR_TEXT, r, 4 if selected else (3 if lifted else 1), border_radius=6)
-            ink = SUIT_RED if card.suit in ("H", "D") else SUIT_BLACK
-            label = card_font.render(card.label, True, ink)
-            screen.blit(label, label.get_rect(center=r.center))
-            key = small.render(str(i + 1), True, COLOR_TEXT)
-            screen.blit(key, key.get_rect(midtop=(rect.centerx, rect.bottom + 4)))
-
-        if game.skip_pending:
-            prompt = "Skipped by a jack! Pick a card to lay without moving"
-        else:
-            prompt = sel.message or "Pick a card to play (click or press its number)"
-        blit_centered(screen, small, prompt, COLOR_TEXT, card_rects(1)[0].bottom + 26)
-
-    log_y = card_rects(1)[0].bottom + 52
-    for line in game.log[-3:]:
-        blit_centered(screen, small, line, COLOR_LOG, log_y)
-        log_y += 19
+    def run(self):
+        while True:
+            for event in pygame.event.get():
+                self.handle(event)
+            self.update()
+            self.draw()
+            pygame.display.flip()
+            self.clock.tick(30)
 
 
 def main():
-    pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Aggravation")
-    clock = pygame.time.Clock()
-
-    game = Game()
-    sel = Selection(game)
-    # Segoe UI Symbol has the card suit glyphs on Windows.
-    fonts = (
-        pygame.font.SysFont("Segoe UI Symbol,Arial", 20, bold=True),
-        pygame.font.SysFont("Segoe UI Symbol,Arial", 22, bold=True),
-        pygame.font.SysFont("Segoe UI Symbol,Arial", 15),
-    )
-
-    while True:
-        players = sel.preview_players()
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
-            if game.winner():
-                continue
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                sel.reset()
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                idx = card_at(game, event.pos)
-                if idx is not None:
-                    sel.click_card(idx)
-                elif sel.click_board(event.pos):
-                    pass
-                else:
-                    peg = peg_under(players, event.pos)
-                    if peg:
-                        sel.click_peg(peg)
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
-                    sel.reset()
-                elif pygame.K_1 <= event.key <= pygame.K_9:
-                    n = event.key - pygame.K_0
-                    if sel.split_peg is not None:
-                        sel.choose_split_steps(n)
-                    else:
-                        sel.click_card(n - 1)
-            players = sel.preview_players()
-
-        chosen = set()
-        if sel.swap_from is not None:
-            chosen.add((sel.color, sel.swap_from))
-        if sel.split_peg is not None:
-            chosen.add((sel.color, sel.split_peg))
-
-        screen.fill(COLOR_BG)
-        draw_board(screen, players, sel.selectable() - chosen, chosen)
-        draw_destinations(screen, fonts[2], sel.split_destinations(), sel.color)
-        draw_panel(screen, fonts, game, sel, pygame.mouse.get_pos())
-
-        pygame.display.flip()
-        clock.tick(30)
+    App().run()
 
 
 if __name__ == "__main__":

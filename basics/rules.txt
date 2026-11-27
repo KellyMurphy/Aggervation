@@ -10,3 +10,5 @@ Home: Pegs in Home are safe and cannot be killed, Pegs may not jump another peg 
 Deal: 4 Player - One 5 card hand & two 4 card hands per deal (one full deck). Dealer moves one seat left after each deal.
 Playing: Pick a playable card, then the peg to move. With a 7, keep picking pegs until all 7 spaces are used. If any card in your hand can be played, you must play one.
 Fold: If a player can't play any card, they fold their hand and sit out until the next hand is dealt.
+Jumping: Pegs may jump other pegs, except a blocking peg on its start or pegs in home. Landing on an opponent's peg sends it back to base; you can't land on your own peg. A 7 sends back every peg it passes, even your own. A 10 may swap with your own peg or an opponent's.
+Partners: Players opposite each other are partners (Red & Blue, Green & Yellow). Play your own pegs until all of them are home, then play your partner's pegs (including bringing them out of base). A 7 that brings your last peg home may finish on your partner's pegs. Landing on your partner's peg sends it back to base. A team wins when all 8 of its pegs are home.

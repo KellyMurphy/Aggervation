@@ -4,7 +4,7 @@ import random
 
 from aggervation.cards import Card
 from aggervation.game import Game, PegPos, Zone
-from aggervation.main import Selection
+from aggervation.selection import Selection
 from aggervation.rules import position_after
 
 
@@ -79,7 +79,7 @@ def test_seven_keeps_picking_until_seven_spaces_used():
     dests = dict(sel.split_destinations())
     assert sorted(dests) == list(range(1, 8))
     sel.click_board(dests[3])  # move peg 1 three spaces
-    assert sel.split == [(0, 3)]
+    assert sel.split == [("RED", 0, 3)]
     assert game.current_player.color == "RED"  # still choosing
     assert "4 steps left" in sel.message
     # The preview shows the first part already moved.
@@ -106,3 +106,18 @@ def test_skipped_player_just_picks_a_card():
     sel.click_card(0)
     assert game.player("RED").hand == []
     assert "skipped" in game.last_action
+
+
+def test_seven_can_continue_onto_partners_pegs():
+    game, sel = setup("7")
+    for n, t in ((0, 94), (1, 93), (2, 92)):
+        place(game, "RED", n, t)
+    last = place(game, "RED", 3, 89)
+    blue = place(game, "BLUE", 0, 10)
+    sel.click_card(0)
+    sel.click_peg(last)  # only 2 fits: finishes home automatically
+    assert sel.split == [("RED", 3, 2)]
+    assert ("BLUE", 0) in sel.selectable()
+    sel.click_peg(blue)  # 5 left, only option
+    assert blue.travelled == 15
+    assert game.current_player.color == "GREEN"
