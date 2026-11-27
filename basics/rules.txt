@@ -1,0 +1,12 @@
+A: Get out of Base or Move 1 
+K: Get out of Base or Move 13
+J: Moves Peg 11.  The next player must play a card and not move a piece, if the next player also lays a jack, the effect moves to the next player.
+10: Players must swap one of their pegs in play with another peg in play; this is the only card that can move a blocking peg from its start space. 
+7: Acts as 7 1’s and can be split amongst players' pegs in play, if a player moves over a piece that piece returns to base. 7’s cannot be used to remove peg from base to start. 
+6: Players must move one of their pegs backwards 6 holes. 
+All Other cards: move face value. 
+Start Spot: A peg moved directly from base to start using an Ace or King blocks all pegs behind it & other pegs may not jump over or kill it. Does not apply to a piece moved back to start from play. 
+Home: Pegs in Home are safe and cannot be killed, Pegs may not jump another peg in the home spots. When a peg reaches its home entry it must turn into home, and must move up by an exact count (e.g. with 2 spaces left, play an A or 2, not a 3). A peg backed onto its home entry with a 6 turns into home on its next move.
+Deal: 4 Player - One 5 card hand & two 4 card hands per deal (one full deck). Dealer moves one seat left after each deal.
+Playing: Pick a playable card, then the peg to move. With a 7, keep picking pegs until all 7 spaces are used. If any card in your hand can be played, you must play one.
+Fold: If a player can't play any card, they fold their hand and sit out until the next hand is dealt.

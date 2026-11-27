@@ -1,0 +1,19 @@
+[project]
+name = "aggervation"
+version = "0.1.0"
+description = "Aggeravation Pygame Project"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pygame>=2.6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aggervation"]
+
+[project.scripts]
+aggervation = "aggervation.main:main"
