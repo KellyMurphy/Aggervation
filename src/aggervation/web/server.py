@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -78,8 +79,29 @@ async def lifespan(app: FastAPI):
     task.cancel()
 
 
+class Static(StaticFiles):
+    """Static files that browsers must re-check each time (cheap: unchanged files get a 304),
+    so a new version of the site is picked up straight after it's deployed."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+def _index_html() -> str:
+    """index.html with the script and styles tagged by content, so an update can't use stale copies."""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    for name in ("app.js", "style.css"):
+        version = hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:12]
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={version}")
+    return html
+
+
+INDEX_HTML = _index_html()
+
 app = FastAPI(title="Aggravation", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", Static(directory=STATIC), name="static")
 
 
 class CreateRequest(BaseModel):
@@ -90,7 +112,7 @@ class CreateRequest(BaseModel):
 @app.get("/")
 @app.get("/g/{code}")
 async def index(code: str | None = None):
-    return FileResponse(STATIC / "index.html")
+    return HTMLResponse(INDEX_HTML, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/api/layout")
