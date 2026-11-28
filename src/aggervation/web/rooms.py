@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 
 from ..bot import choose_play
 from ..game import PLAYER_ORDER, Game
-from ..rules import IllegalMove, MoveKind, apply_partial_split, copy_pegs
-from ..models import Zone
+from ..models import PEGS_PER_PLAYER
+from ..rules import SPLIT_RANK, SPLIT_TOTAL, IllegalMove, seven_used
 
 # Codes look like XU8R-D4FG. Letters/digits that are easy to mix up (I/1/L, O/0) are left out.
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
@@ -196,21 +196,69 @@ class Room:
         assert self.game is not None
         return self.game.current_player.color
 
-    def play(self, token: str, card_idx: int, move_idx: int | None, turn_seq: int) -> None:
+    def _my_card(self, token: str, card_idx: int, turn_seq: int):
+        """The current player's card, after checking it's really their turn."""
         if self.phase != PLAYING or self.game is None:
             raise RoomError("No game in progress")
         member = self._member(token)
-        game = self.game
         if member.seat != self._current_color():
             raise RoomError("It's not your turn")
         if turn_seq != self.turn_seq:
             raise RoomError("The board changed - try again")
-        hand = game.current_player.hand
-        if not (0 <= card_idx < len(hand)):
+        hand = self.game.current_player.hand
+        if not isinstance(card_idx, int) or not (0 <= card_idx < len(hand)):
             raise RoomError("No such card")
-        card = hand[card_idx]
+        return hand[card_idx]
+
+    def seven(self, token: str, card_idx: int, segments, turn_seq: int) -> dict:
+        """Choosing a 7 piece by piece: the board so far and what can happen next.
+
+        Only for the player choosing; nothing changes until they play it.
+        """
+        card = self._my_card(token, card_idx, turn_seq)
+        game = self.game
+        assert game is not None
+        if card.rank != SPLIT_RANK or game.skip_pending:
+            raise RoomError("That card isn't a 7")
+        segs = parse_segments(segments)
+        try:
+            board = game.seven_preview(segs)
+            choices = game.seven_choices(segs)
+        except IllegalMove as e:
+            raise RoomError(str(e)) from e
+        return {
+            "type": "seven",
+            "card": card_idx,
+            "turn_seq": self.turn_seq,
+            "segments": [list(s) for s in segs],
+            "left": SPLIT_TOTAL - seven_used(segs),
+            "pegs": pegs_json(board),
+            "choices": [
+                {
+                    "color": c.color,
+                    "num": c.num,
+                    "steps": c.steps,
+                    "segments": [list(s) for s in c.segments],
+                    "dest": {"zone": c.dest.zone.value, "index": c.dest.index},
+                    "sent": [list(k) for k in c.sent],
+                }
+                for c in choices
+            ],
+        }
+
+    def play(self, token: str, card_idx: int, move_idx: int | None, turn_seq: int,
+             seven=None) -> None:
+        """Play a card: ``move_idx`` picks from its moves, or ``seven`` gives a 7's parts."""
+        card = self._my_card(token, card_idx, turn_seq)
+        game = self.game
+        assert game is not None
         move = None
-        if move_idx is not None:
+        if seven is not None:
+            try:
+                move = game.seven_move(parse_segments(seven))
+            except IllegalMove as e:
+                raise RoomError(str(e)) from e
+        elif move_idx is not None:
             moves = game.legal_moves(card)
             if not (0 <= move_idx < len(moves)):
                 raise RoomError("That move isn't allowed")
@@ -304,61 +352,66 @@ class Room:
             "log": game.log[-LOG_LINES:],
             "last_moved": [list(k) for k in game.last_moved],
             "players": players,
-            "pegs": [
-                {
-                    "color": peg.color,
-                    "num": peg.number,
-                    "zone": peg.pos.zone.value,
-                    "index": peg.pos.index,
-                    "blocking": peg.blocking,
-                }
-                for p in game.players
-                for peg in p.pegs
-            ],
+            "pegs": pegs_json(game.players),
             "hand": [],
             "moves": None,
+            "playable": None,
         }
         if me and me.seat:
             seat_player = game.player(me.seat)
             view["hand"] = [{"rank": c.rank, "suit": c.suit, "label": c.label} for c in seat_player.hand]
             if me.seat == current.color and self.phase == PLAYING and not game.skip_pending:
+                # A 7's moves aren't listed: the page asks for them a piece at a time (see seven()).
                 view["moves"] = [
-                    [self._move_json(m) for m in game.legal_moves(card)] for card in current.hand
+                    [] if card.rank == SPLIT_RANK else [move_json(m) for m in game.legal_moves(card)]
+                    for card in current.hand
+                ]
+                view["playable"] = [
+                    game.can_play(card) if card.rank == SPLIT_RANK else bool(moves)
+                    for card, moves in zip(current.hand, view["moves"])
                 ]
         return view
 
-    def _move_json(self, move) -> dict:
-        game = self.game
-        assert game is not None
-        data = {
-            "kind": move.kind.value,
-            "peg": move.peg,
-            "target": list(move.target) if move.target else None,
-            "segments": [],
+
+def move_json(move) -> dict:
+    return {
+        "kind": move.kind.value,
+        "peg": move.peg,
+        "target": list(move.target) if move.target else None,
+    }
+
+
+def pegs_json(players) -> list[dict]:
+    return [
+        {
+            "color": peg.color,
+            "num": peg.number,
+            "zone": peg.pos.zone.value,
+            "index": peg.pos.index,
+            "blocking": peg.blocking,
         }
-        if move.kind is MoveKind.SPLIT:
-            # Where each part of a 7 lands, and who it knocks back, so the page can preview it.
-            trial = copy_pegs(game.players)
-            for color, num, steps in move.segments(game.controlled_color()):
-                before = {(p.color, p.number): p.pos for pl in trial for p in pl.pegs}
-                apply_partial_split(trial, [(color, num, steps)])
-                moved = next(p for pl in trial for p in pl.pegs if (p.color, p.number) == (color, num))
-                sent = [
-                    [p.color, p.number]
-                    for pl in trial
-                    for p in pl.pegs
-                    if p.pos.zone is Zone.BASE and before[(p.color, p.number)].zone is not Zone.BASE
-                ]
-                data["segments"].append(
-                    {
-                        "color": color,
-                        "num": num,
-                        "steps": steps,
-                        "dest": {"zone": moved.pos.zone.value, "index": moved.pos.index},
-                        "sent": sent,
-                    }
-                )
-        return data
+        for p in players
+        for peg in p.pegs
+    ]
+
+
+def parse_segments(raw) -> tuple[tuple[str, int, int], ...]:
+    """A 7's parts from the page: [[color, peg number, steps], ...]."""
+    if not isinstance(raw, list) or len(raw) > 2 * SPLIT_TOTAL:
+        raise RoomError("That 7 isn't allowed")
+    segs = []
+    for item in raw:
+        if (
+            not isinstance(item, list)
+            or len(item) != 3
+            or item[0] not in PLAYER_ORDER
+            or not all(isinstance(x, int) and not isinstance(x, bool) for x in item[1:])
+            or not (0 <= item[1] < PEGS_PER_PLAYER)
+            or item[2] < 1
+        ):
+            raise RoomError("That 7 isn't allowed")
+        segs.append((item[0], item[1], item[2]))
+    return tuple(segs)
 
 
 class RoomManager:

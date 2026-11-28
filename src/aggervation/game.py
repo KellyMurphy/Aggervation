@@ -18,7 +18,19 @@ from .models import (  # noqa: F401  (re-exported for callers)
     Player,
     Zone,
 )
-from .rules import IllegalMove, Move, apply_move, has_legal_move, legal_moves
+from .rules import (
+    SPLIT_RANK,
+    IllegalMove,
+    Move,
+    SevenChoice,
+    apply_move,
+    has_legal_move,
+    is_legal_seven,
+    legal_moves,
+    seven_choices,
+    seven_move,
+    seven_preview,
+)
 
 # "4 Player - One 5 card hand & two 4 card hands per deal" (4 x 13 = 52 cards).
 HAND_SIZES = (5, 4, 4)
@@ -129,6 +141,26 @@ class Game:
         control, finish_on = self._move_args(self.current_player)
         return legal_moves(self.players, control, card, finish_on)
 
+    def can_play(self, card: Card) -> bool:
+        """Can the current player move with ``card``? (Cheaper than listing every move.)"""
+        if self.skip_pending:
+            return False
+        control, finish_on = self._move_args(self.current_player)
+        return has_legal_move(self.players, control, [card], finish_on)
+
+    # A 7 is chosen one piece at a time (see rules.seven_choices).
+    def seven_choices(self, segments) -> list[SevenChoice]:
+        control, finish_on = self._move_args(self.current_player)
+        return seven_choices(self.players, control, finish_on, segments)
+
+    def seven_preview(self, segments):
+        control, finish_on = self._move_args(self.current_player)
+        return seven_preview(self.players, control, finish_on, segments)
+
+    def seven_move(self, segments) -> Move:
+        control, finish_on = self._move_args(self.current_player)
+        return seven_move(control, finish_on, segments)
+
     # --- Dealing ---
 
     def _left_of(self, idx: int) -> int:
@@ -180,7 +212,9 @@ class Game:
                 raise IllegalMove(f"{card.label} can't move; play a different card")
             if move is None:
                 raise IllegalMove(f"Choose how to move with {card.label}")
-            if move not in moves:
+            # A 7 chosen piece by piece may move a peg more than once, so it's checked directly.
+            seven_ok = card.rank == SPLIT_RANK and is_legal_seven(self.players, control, finish_on, move)
+            if move not in moves and not seven_ok:
                 raise IllegalMove("That move isn't allowed")
             before = self._positions()
             apply_move(self.players, control, move)

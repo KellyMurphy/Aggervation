@@ -6,6 +6,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
+from aggervation.cards import Card
+from aggervation.rules import position_after
 from aggervation.web import rooms as rooms_mod
 from aggervation.web.rooms import (
     LOBBY,
@@ -185,15 +187,55 @@ def test_current_player_gets_their_moves():
     assert theirs["moves"] is None
 
 
-def test_seven_moves_include_landing_spots():
+def seven_room():
+    """RED to play a 7, with two pegs out (holes 10 and 30)."""
     room = started_room()
-    view = room.view(token_for(room, room.game.current_player.color))
-    for card, moves in zip(view["game"]["hand"], view["game"]["moves"]):
-        for m in moves:
-            if card["rank"] == "7":
-                assert m["segments"] and all("dest" in s for s in m["segments"])
-            else:
-                assert m["segments"] == []
+    game = room.game
+    game.current_idx, game.skip_pending = 0, False
+    game.folded.clear()
+    game.player("RED").hand = [Card("7", "H"), Card("2", "S")]
+    for num, t in ((0, 10), (1, 30)):
+        peg = game.player("RED").pegs[num]
+        peg.travelled, peg.pos, peg.blocking = t, position_after("RED", t), False
+    room.turn_seq += 1
+    return room, game
+
+
+def test_sevens_are_chosen_piece_by_piece():
+    room, game = seven_room()
+    view = room.view("host")["game"]
+    assert view["moves"][0] == [] and view["playable"] == [True, True]
+
+    segs = []
+    for num, steps in ((0, 2), (1, 3), (0, 2)):  # peg 1 moves twice
+        answer = room.seven("host", 0, segs, room.turn_seq)
+        choice = next(c for c in answer["choices"] if (c["color"], c["num"], c["steps"]) == ("RED", num, steps))
+        segs = choice["segments"]
+    answer = room.seven("host", 0, segs, room.turn_seq)
+    assert answer["left"] == 0
+    red0 = next(p for p in answer["pegs"] if (p["color"], p["num"]) == ("RED", 0))
+    assert red0["index"] == 14
+    # Take 1 back off peg 1, then put it on peg 2 instead.
+    back = next(c for c in answer["choices"] if (c["num"], c["steps"]) == (0, -1))
+    assert back["segments"] == [["RED", 0, 2], ["RED", 1, 3], ["RED", 0, 1]]
+
+    room.play("host", 0, None, room.turn_seq, seven=segs)
+    assert game.player("RED").pegs[0].travelled == 14
+    assert game.player("RED").pegs[1].travelled == 33
+
+
+def test_bad_or_unfinished_sevens_rejected():
+    room, _ = seven_room()
+    with pytest.raises(RoomError):
+        room.seven("host", 0, [["RED", 0, 9]], room.turn_seq)  # more than 7
+    with pytest.raises(RoomError):
+        room.seven("host", 0, [["RED", 9, 1]], room.turn_seq)  # no such peg
+    with pytest.raises(RoomError):
+        room.seven("host", 1, [], room.turn_seq)  # that's the 2
+    with pytest.raises(RoomError):
+        room.play("host", 0, None, room.turn_seq, seven=[["RED", 0, 3]])  # only 3 of 7
+    with pytest.raises(RoomError):
+        room.seven(token_for(room, "GREEN"), 0, [], room.turn_seq)  # not their turn
 
 
 def test_humans_play_a_full_game_through_the_room():

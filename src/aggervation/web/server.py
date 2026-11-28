@@ -133,6 +133,11 @@ async def play(ws: WebSocket, code: str, token: str, name: str = ""):
         while True:
             msg = await ws.receive_json()
             try:
+                if msg.get("type") == "seven":  # a private answer; nothing changes for anyone else
+                    await ws.send_json(
+                        room.seven(token, int(msg["card"]), msg["segments"], int(msg["turn_seq"]))
+                    )
+                    continue
                 handle(room, token, msg)
             except RoomError as e:
                 await ws.send_json({"type": "error", "message": str(e)})
@@ -163,7 +168,8 @@ def handle(room, token: str, msg: dict) -> None:
         room.start(token)
     elif kind == "play":
         move = msg.get("move")
-        room.play(token, int(msg["card"]), None if move is None else int(move), int(msg["turn_seq"]))
+        room.play(token, int(msg["card"]), None if move is None else int(move), int(msg["turn_seq"]),
+                  seven=msg.get("seven"))
     elif kind == "lobby":
         room.back_to_lobby(token)
     elif kind == "rename":

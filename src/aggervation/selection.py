@@ -1,8 +1,8 @@
 """Turning clicks into a play: pick a card, then the peg(s)."""
 
 from .game import Game, Peg, Player, Zone
-from .rules import SPLIT_RANK, SPLIT_TOTAL, SWAP_RANK, IllegalMove, Move, MoveKind
-from .rules import apply_partial_split, copy_pegs, position_after
+from .rules import SPLIT_RANK, SPLIT_TOTAL, SWAP_RANK, IllegalMove, Move, MoveKind, SevenChoice
+from .rules import seven_used
 from .view import near, screen_pos
 
 PegKey = tuple[str, int]  # (color, peg number)
@@ -10,7 +10,13 @@ Segment = tuple[str, int, int]  # (color, peg number, steps) - one part of a 7
 
 
 class Selection:
-    """What the current player has picked so far this turn: a card, then peg(s)."""
+    """What the current player has picked so far this turn: a card, then peg(s).
+
+    A 7 is built a piece at a time: click any peg and how far it goes, again
+    and again (the same peg too) until all 7 steps are used. A peg already
+    moved can be clicked to take steps back. Once all 7 are used the player
+    confirms with Enter or the Play button.
+    """
 
     def __init__(self, game: Game):
         self.game = game
@@ -20,8 +26,9 @@ class Selection:
         self.card_idx: int | None = None
         self.moves: list[Move] = []
         self.swap_from: int | None = None  # 10: own peg chosen, waiting for partner
-        self.split: list[Segment] = []  # 7: parts chosen so far
-        self.split_peg: PegKey | None = None  # 7: peg chosen, waiting for a step count
+        self.split: tuple[Segment, ...] = ()  # 7: parts chosen so far
+        self.split_peg: PegKey | None = None  # 7: peg chosen, waiting for where it goes
+        self._choices: tuple[tuple[Segment, ...], list[SevenChoice]] | None = None
         self.message = message
 
     @property
@@ -33,23 +40,36 @@ class Selection:
     def card(self):
         return None if self.card_idx is None else self.game.current_player.hand[self.card_idx]
 
+    @property
+    def is_seven(self) -> bool:
+        return self.card is not None and self.card.rank == SPLIT_RANK
+
+    @property
+    def seven_left(self) -> int:
+        return SPLIT_TOTAL - seven_used(self.split)
+
+    @property
+    def seven_done(self) -> bool:
+        """All 7 steps are used: waiting for the player to confirm."""
+        return self.is_seven and self.seven_left == 0
+
     # The board as the player sees it: with a 7's chosen parts already moved.
     def preview_players(self) -> list[Player]:
         if not self.split:
             return self.game.players
-        players = copy_pegs(self.game.players)
-        apply_partial_split(players, self.split)
-        return players
+        return self.game.seven_preview(self.split)
 
-    def _split_continuations(self) -> list[tuple[Move, list[Segment]]]:
-        """7 moves that start with the parts chosen so far, with their parts."""
-        n = len(self.split)
-        result = []
-        for m in self.moves:
-            segs = m.segments(self.color)
-            if segs[:n] == self.split and len(segs) > n:
-                result.append((m, segs))
-        return result
+    def seven_choices(self) -> list[SevenChoice]:
+        if not self.is_seven:
+            return []
+        if self._choices is None or self._choices[0] != self.split:
+            self._choices = (self.split, self.game.seven_choices(self.split))
+        return self._choices[1]
+
+    def _peg_choices(self) -> list[SevenChoice]:
+        if self.split_peg is None:
+            return []
+        return [c for c in self.seven_choices() if (c.color, c.num) == self.split_peg]
 
     def selectable(self) -> set[PegKey]:
         """Pegs (color, number) the player may click next."""
@@ -60,11 +80,10 @@ class Selection:
             if self.swap_from is None:
                 return {(color, m.peg) for m in self.moves if m.peg is not None}
             return {m.target for m in self.moves if m.peg == self.swap_from and m.target}
-        if self.card.rank == SPLIT_RANK:
+        if self.is_seven:
             if self.split_peg is not None:
                 return {self.split_peg}
-            n = len(self.split)
-            return {(segs[n][0], segs[n][1]) for _, segs in self._split_continuations()}
+            return {(c.color, c.num) for c in self.seven_choices()}
         result = {(color, m.peg) for m in self.moves if m.peg is not None}
         if any(m.kind is MoveKind.ENTER for m in self.moves):
             pegs = self.game.player(color).pegs
@@ -72,25 +91,12 @@ class Selection:
         return result
 
     def split_step_options(self) -> list[int]:
-        if self.split_peg is None:
-            return []
-        n = len(self.split)
-        return sorted(
-            {segs[n][2] for _, segs in self._split_continuations() if segs[n][:2] == self.split_peg}
-        )
+        """Step counts for the chosen peg: forward, or negative to take steps back."""
+        return sorted(c.steps for c in self._peg_choices())
 
     def split_destinations(self) -> list[tuple[int, tuple[int, int]]]:
-        """For a 7: (steps, screen position) of each hole the chosen peg can reach."""
-        if self.split_peg is None:
-            return []
-        color, num = self.split_peg
-        peg = next(p for pl in self.preview_players() for p in pl.pegs if (p.color, p.number) == (color, num))
-        result = []
-        for steps in self.split_step_options():
-            dest = position_after(color, peg.travelled + steps)
-            if dest is not None:
-                result.append((steps, screen_pos(color, dest)))
-        return result
+        """For a 7: (steps, screen position) of each hole the chosen peg can go to."""
+        return [(c.steps, screen_pos(c.color, c.dest)) for c in self._peg_choices()]
 
     # --- Input ---
 
@@ -105,9 +111,10 @@ class Selection:
         if idx == self.card_idx:
             self.reset()
             return
-        moves = game.legal_moves(hand[idx])
-        if not moves:
-            self.reset(f"{hand[idx].label} can't move right now - pick another card")
+        card = hand[idx]
+        moves = [] if card.rank == SPLIT_RANK else game.legal_moves(card)
+        if not (game.can_play(card) if card.rank == SPLIT_RANK else moves):
+            self.reset(f"{card.label} can't move right now - pick another card")
             return
         self.reset()
         self.card_idx, self.moves = idx, moves
@@ -132,8 +139,10 @@ class Selection:
         elif rank == SPLIT_RANK:
             self.split_peg = key
             options = self.split_step_options()
-            if len(options) == 1:
+            if len(options) == 1 and options[0] > 0:  # only one place to go: go there
                 self.choose_split_steps(options[0])
+            elif all(s < 0 for s in options):
+                self.message = "Click where to take this peg back to"
             else:
                 self.message = "Click where this peg goes (or press the number)"
         else:
@@ -152,15 +161,24 @@ class Selection:
         return False
 
     def choose_split_steps(self, steps: int):
-        if self.split_peg is None or steps not in self.split_step_options():
+        """Move the chosen peg ``steps`` (negative: take steps back)."""
+        choice = next((c for c in self._peg_choices() if c.steps == steps), None)
+        if choice is None:
             return
-        self.split.append((*self.split_peg, steps))
+        self.split = choice.segments
         self.split_peg = None
-        done = next((m for m in self.moves if m.segments(self.color) == self.split), None)
-        if done:
-            self._play(self.card, done)
-        else:
-            self.message = self._prompt()
+        self.message = self._prompt()
+
+    def finish_seven(self):
+        """Play the 7 once all its steps are used."""
+        if not self.seven_done:
+            return
+        try:
+            move = self.game.seven_move(self.split)
+        except IllegalMove as e:
+            self.reset(str(e))
+            return
+        self._play(self.card, move)
 
     def _prompt(self) -> str:
         card = self.card
@@ -170,8 +188,11 @@ class Selection:
         if rank == SWAP_RANK:
             return "10: click your peg to swap"
         if rank == SPLIT_RANK:
-            left = SPLIT_TOTAL - sum(s for _, _, s in self.split)
-            return f"7: click a peg to move ({left} steps left)"
+            left = self.seven_left
+            if left == 0:
+                return "7 used: press Enter or Play to finish, or click a moved peg to take steps back"
+            undo = ", or a moved peg to take steps back" if self.split else ""
+            return f"7: click a peg to move ({left} step{'s' if left != 1 else ''} left){undo}"
         return f"{card.label}: click a peg to move"
 
     def _play(self, card, move):

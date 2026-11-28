@@ -243,23 +243,40 @@ def apply_move(players: list[Player], color: str, move: Move) -> None:
         total = sum(s for _, s in move.splits) + sum(s for _, s in move.partner_splits)
         if total != SPLIT_TOTAL:
             raise IllegalMove("A 7 must use all 7 steps")
-        for num, steps in move.splits:
-            _move_forward(players, own[num], steps, kill_passed=True)
-        if move.partner_splits:
-            if move.partner is None or not all(p.pos.zone is Zone.HOME for p in own):
+        if move.partner_splits and move.partner is None:
+            raise IllegalMove("You can only move your partner's pegs once all yours are home")
+        apply_segments(players, color, move.partner, move.segments(color))
+
+
+def apply_segments(players: list[Player], color: str, partner: str | None, segments) -> None:
+    """Carry out parts of a 7, given as (color, peg number, steps), in order.
+
+    A peg may appear more than once. Partner pegs may only move once all of
+    ``color``'s pegs are home.
+    """
+    own = _player(players, color).pegs
+    for seg_color, num, steps in segments:
+        if steps <= 0:
+            raise IllegalMove("Each part of a 7 must move at least 1 step")
+        if seg_color != color:
+            if seg_color != partner:
+                raise IllegalMove("A 7 can only move your own pegs")
+            if not all(p.pos.zone is Zone.HOME for p in own):
                 raise IllegalMove("You can only move your partner's pegs once all yours are home")
-            partner_pegs = _player(players, move.partner).pegs
-            for num, steps in move.partner_splits:
-                _move_forward(players, partner_pegs[num], steps, kill_passed=True)
+        _move_forward(players, _player(players, seg_color).pegs[num], steps, kill_passed=True)
 
 
-def apply_partial_split(players: list[Player], segments) -> None:
+def apply_partial_split(players: list[Player], segments, color: str | None = None,
+                        partner: str | None = None) -> None:
     """Apply the first part(s) of a 7, given as (color, peg number, steps).
 
     Used to preview a 7 while the player is still choosing.
     """
-    for color, num, steps in segments:
-        _move_forward(players, _player(players, color).pegs[num], steps, kill_passed=True)
+    if color is None:
+        for seg_color, num, steps in segments:
+            _move_forward(players, _player(players, seg_color).pegs[num], steps, kill_passed=True)
+    else:
+        apply_segments(players, color, partner, segments)
 
 
 def copy_pegs(players: list[Player]) -> list[Player]:
@@ -378,3 +395,174 @@ def has_legal_move(
         for card in cards
         for m in _all_candidates(players, color, card, partner)
     )
+
+
+# --- Choosing a 7 one step at a time ---
+#
+# A player builds a 7 a piece at a time: move any peg some steps, then any peg
+# again (the same one too), until all 7 are used. Until they finish, they can
+# take steps back off a peg they've moved (the board is replayed from the start
+# of the turn, so anything that peg knocked back returns).
+
+Segment = tuple[str, int, int]  # (color, peg number, steps)
+
+
+@dataclass(frozen=True)
+class SevenChoice:
+    """One thing the player can do next while choosing a 7."""
+
+    color: str
+    num: int
+    steps: int  # forward steps, or negative to take steps back
+    segments: tuple[Segment, ...]  # the whole 7 so far if this is chosen
+    dest: PegPos  # where the peg ends up
+    sent: tuple[tuple[str, int], ...] = ()  # pegs this sends back to base
+
+
+def seven_used(segments) -> int:
+    return sum(s for _, _, s in segments)
+
+
+def add_seven_steps(segments, color: str, num: int, steps: int) -> tuple[Segment, ...]:
+    """The 7 with ``steps`` more on a peg (joined onto the last part if it's the same peg)."""
+    segs = [tuple(s) for s in segments]
+    if segs and segs[-1][:2] == (color, num):
+        segs[-1] = (color, num, segs[-1][2] + steps)
+    else:
+        segs.append((color, num, steps))
+    return tuple(segs)
+
+
+def take_back_seven_steps(segments, color: str, num: int, steps: int) -> tuple[Segment, ...]:
+    """The 7 with ``steps`` taken back off a peg, latest part first."""
+    segs = [tuple(s) for s in segments]
+    for i in range(len(segs) - 1, -1, -1):
+        if steps == 0:
+            break
+        c, n, s = segs[i]
+        if (c, n) != (color, num):
+            continue
+        cut = min(s, steps)
+        segs[i] = (c, n, s - cut)
+        steps -= cut
+    if steps:
+        raise IllegalMove("That peg hasn't moved that far")
+    return tuple(seg for seg in segs if seg[2] > 0)
+
+
+def seven_move(color: str, partner: str | None, segments) -> Move:
+    """Turn a finished 7 (list of parts) into a Move. Your own pegs' parts must come first."""
+    segments = [tuple(s) for s in segments]
+    own = tuple((n, s) for c, n, s in segments if c == color)
+    theirs = tuple((n, s) for c, n, s in segments if c != color)
+    if any(c == color for c, _, _ in segments[len(own):]):
+        raise IllegalMove("Move your own pegs before your partner's")
+    if theirs and any(c != partner for c, _, _ in segments if c != color):
+        raise IllegalMove("A 7 can only move your own pegs")
+    return Move(MoveKind.SPLIT, splits=own, partner=partner if theirs else None, partner_splits=theirs)
+
+
+def _partner_started(color: str, segments) -> bool:
+    return any(c != color for c, _, _ in segments)
+
+
+def _board_after(players, color, partner, segments) -> list[Player] | None:
+    """The board with ``segments`` played, or None if they aren't allowed."""
+    trial = copy_pegs(players)
+    try:
+        apply_segments(trial, color, partner, segments)
+    except IllegalMove:
+        return None
+    return trial
+
+
+def can_finish_seven(players, color: str, partner: str | None, left: int,
+                     partner_only: bool = False) -> bool:
+    """Can ``left`` more steps of a 7 be used from this board?"""
+    if left == 0:
+        return True
+    own = _player(players, color).pegs
+    own_in_play = [p.number for p in own if p.pos.zone is not Zone.BASE]
+    if not partner_only:
+        for split in _split_candidates(own_in_play, left):
+            if _board_after(players, color, partner, [(color, n, s) for n, s in split]):
+                return True
+    if partner is None or any(p.pos.zone is Zone.BASE for p in own):
+        return False
+    partner_in_play = [p.number for p in _player(players, partner).pegs if p.pos.zone is not Zone.BASE]
+    for used in range(0, 1 if partner_only else left):
+        own_parts = [()] if used == 0 else _split_candidates(own_in_play, used)
+        for own_part in own_parts:
+            trial = _board_after(players, color, partner, [(color, n, s) for n, s in own_part])
+            if trial is None or not all(p.pos.zone is Zone.HOME for p in _player(trial, color).pegs):
+                continue
+            for rest in _split_candidates(partner_in_play, left - used):
+                if _board_after(trial, color, partner, [(partner, n, s) for n, s in rest]):
+                    return True
+    return False
+
+
+def seven_preview(players, color: str, partner: str | None, segments) -> list[Player]:
+    """The board with a part-chosen 7 played. Raises IllegalMove if it isn't allowed."""
+    board = _board_after(players, color, partner, segments)
+    if board is None or seven_used(segments) > SPLIT_TOTAL:
+        raise IllegalMove("That 7 isn't allowed")
+    return board
+
+
+def seven_choices(players, color: str, partner: str | None, segments) -> list[SevenChoice]:
+    """What the player can do next while choosing a 7 (``segments`` = parts chosen so far).
+
+    Raises IllegalMove if the parts so far aren't allowed.
+    """
+    segments = tuple(tuple(s) for s in segments)
+    now = seven_preview(players, color, partner, segments)
+    left = SPLIT_TOTAL - seven_used(segments)
+    started = _partner_started(color, segments)
+    choices: list[SevenChoice] = []
+
+    # Forward: any of your pegs in play (your partner's once yours are all home).
+    movers = [] if started else [p for p in _player(now, color).pegs if p.pos.zone is not Zone.BASE]
+    if partner and all(p.pos.zone is Zone.HOME for p in _player(now, color).pegs):
+        movers += [p for p in _player(now, partner).pegs if p.pos.zone is not Zone.BASE]
+    for peg in movers:
+        partner_only = started or peg.color != color
+        for steps in range(1, left + 1):
+            trial = _board_after(now, color, partner, [(peg.color, peg.number, steps)])
+            if trial is None or not can_finish_seven(trial, color, partner, left - steps, partner_only):
+                continue
+            sent = tuple(
+                (p.color, p.number)
+                for pl in trial for p in pl.pegs
+                if p.pos.zone is Zone.BASE and _player(now, p.color).pegs[p.number].pos.zone is not Zone.BASE
+            )
+            choices.append(SevenChoice(
+                peg.color, peg.number, steps,
+                add_seven_steps(segments, peg.color, peg.number, steps),
+                _player(trial, peg.color).pegs[peg.number].pos, sent,
+            ))
+
+    # Back: take steps off a peg already moved in this 7.
+    moved: dict[tuple[str, int], int] = {}
+    for c, n, s in segments:
+        moved[(c, n)] = moved.get((c, n), 0) + s
+    for (c, n), total in moved.items():
+        for steps in range(1, total + 1):
+            new = take_back_seven_steps(segments, c, n, steps)
+            board = _board_after(players, color, partner, new)
+            if board is None or not can_finish_seven(
+                board, color, partner, SPLIT_TOTAL - seven_used(new), _partner_started(color, new)
+            ):
+                continue
+            choices.append(SevenChoice(c, n, -steps, new, _player(board, c).pegs[n].pos))
+    return choices
+
+
+def is_legal_seven(players, color: str, partner: str | None, move: Move) -> bool:
+    """A 7 chosen piece by piece (a peg may move more than once): all 7 used, every part allowed."""
+    if move.kind is not MoveKind.SPLIT:
+        return False
+    if move.partner_splits and move.partner != partner:
+        return False
+    segments = move.segments(color)
+    return seven_used(segments) == SPLIT_TOTAL and _board_after(players, color, partner, segments) is not None

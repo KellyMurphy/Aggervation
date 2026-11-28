@@ -54,6 +54,12 @@ def play_again_rect() -> pygame.Rect:
     return pygame.Rect(BOARD_CENTER[0] - 90, BOARD_CENTER[1] + 20, 180, 44)
 
 
+def seven_done_rect() -> pygame.Rect:
+    """The Play button shown once all 7 steps of a 7 are chosen."""
+    prompt_y = card_rects(1)[0].bottom + 26
+    return pygame.Rect(BOARD_CENTER[0] - 60, prompt_y + 24, 120, 32)
+
+
 def draw_button(screen, font, rect, text, fill, ink=COLOR_TEXT, hover=False):
     pygame.draw.rect(screen, fill, rect, border_radius=8)
     pygame.draw.rect(screen, COLOR_TEXT, rect, 3 if hover else 1, border_radius=8)
@@ -167,7 +173,9 @@ class App:
             sel.reset()
         elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             idx = card_at(game, event.pos)
-            if idx is not None:
+            if sel.seven_done and seven_done_rect().collidepoint(event.pos):
+                sel.finish_seven()
+            elif idx is not None:
                 sel.click_card(idx)
             elif not sel.click_board(event.pos):
                 peg = peg_under(sel.preview_players(), event.pos)
@@ -176,6 +184,8 @@ class App:
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 sel.reset()
+            elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                sel.finish_seven()
             elif pygame.K_1 <= event.key <= pygame.K_9:
                 n = event.key - pygame.K_0
                 if sel.split_peg is not None:
@@ -319,7 +329,13 @@ class App:
             else:
                 prompt = f"{player.color.title()} (computer) is thinking...  Space: hurry"
         blit_centered(screen, small, prompt, COLOR_TEXT, prompt_y)
-        self.draw_log(prompt_y + 26)
+        if self.hand_visible() and sel.seven_done:
+            rect = seven_done_rect()
+            draw_button(screen, self.font, rect, "Play 7", (250, 248, 240),
+                        hover=rect.collidepoint(pygame.mouse.get_pos()))
+            self.draw_log(rect.bottom + 10)
+        else:
+            self.draw_log(prompt_y + 26)
 
     def draw_log(self, y):
         for line in self.game.log[-3:]:

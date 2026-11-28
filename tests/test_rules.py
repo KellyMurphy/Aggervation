@@ -565,6 +565,67 @@ def test_random_games_keep_board_valid(seed):
             break
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_sevens_chosen_piece_by_piece_always_finish(seed):
+    """In random games, wander through a 7's choices (forward and back) and it always plays."""
+    rng = random.Random(seed)
+    game = Game(rng=random.Random(seed))
+    sevens = 0
+    for _ in range(3000):
+        player = game.current_player
+        if game.skip_pending:
+            game.play_card(rng.choice(player.hand))
+        else:
+            seven = next((c for c in player.hand if c.rank == "7" and game.can_play(c)), None)
+            if seven:
+                sevens += 1
+                segs: tuple = ()
+                for _ in range(40):
+                    choices = game.seven_choices(segs)
+                    assert choices, f"stuck choosing a 7: {segs}"
+                    if sum(s for _, _, s in segs) == 7 and rng.random() < 0.5:
+                        break
+                    forward = [c for c in choices if c.steps > 0]
+                    pool = forward if forward and rng.random() < 0.8 else choices
+                    segs = rng.choice(pool).segments
+                # Finish: keep moving forward until all 7 are used.
+                while sum(s for _, _, s in segs) < 7:
+                    segs = rng.choice([c for c in game.seven_choices(segs) if c.steps > 0]).segments
+                game.play_card(seven, game.seven_move(segs))
+            else:
+                options = [(c, m) for c in player.hand for m in game.legal_moves(c)]
+                game.play_card(*rng.choice(options))
+        check_board(game)
+        if game.winner():
+            break
+    assert sevens > 5
+
+
+def test_seven_choices_offered_whenever_a_seven_can_move():
+    rng = random.Random(9)
+    game = Game(rng=random.Random(9))
+    for _ in range(1500):
+        player = game.current_player
+        if game.skip_pending:
+            game.play_card(rng.choice(player.hand))
+            continue
+        seven = Card("7", "S")
+        assert bool(game.legal_moves(seven)) == bool(game.seven_choices(()))
+        options = [(c, m) for c in player.hand for m in game.legal_moves(c)]
+        game.play_card(*rng.choice(options))
+        if game.winner():
+            break
+
+
+def test_seven_move_needs_own_pegs_first():
+    from aggervation.rules import seven_move
+
+    with pytest.raises(IllegalMove):
+        seven_move("RED", "BLUE", [("BLUE", 0, 2), ("RED", 0, 5)])
+    move = seven_move("RED", "BLUE", [("RED", 0, 2), ("BLUE", 1, 5)])
+    assert move.splits == ((0, 2),) and move.partner == "BLUE" and move.partner_splits == ((1, 5),)
+
+
 # --- Home row: exact counts (user's examples) ---
 
 def test_two_spaces_left_allows_ace_or_two_but_not_three():

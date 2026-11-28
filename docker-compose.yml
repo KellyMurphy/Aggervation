@@ -1,5 +1,5 @@
 # Run the Aggravation website:
-#   docker compose up --build -d     then open http://localhost:8000
+#   docker compose up --build -d     then open http://localhost:8500
 #   docker compose logs -f           watch it
 #   docker compose down              stop it
 # Use a different port on your machine with:  AGGRAVATION_PORT=8080 docker compose up -d
@@ -8,7 +8,7 @@ services:
     build: .
     image: aggravation
     ports:
-      - "${AGGRAVATION_PORT:-8000}:8000"
+      - "${AGGRAVATION_PORT:-8500}:8000"
     environment:
       HOST: 0.0.0.0
       PORT: 8000

@@ -28,7 +28,8 @@ let sel = freshSel();
 let boardBuilt = false;
 
 function freshSel(msg = "") {
-  return { card: null, swapFrom: null, split: [], splitPeg: null, msg, pending: false };
+  // seven: the server's answer for a 7 being chosen (board so far + what can happen next).
+  return { card: null, swapFrom: null, seven: null, splitPeg: null, msg, pending: false, loading: false };
 }
 
 // ---------- Home ----------
@@ -114,6 +115,7 @@ function connect() {
   sock.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "state") onState(msg);
+    else if (msg.type === "seven") onSeven(msg);
     else if (msg.type === "error") {
       if (msg.fatal) leaveRoom(msg.message);
       else { sel = freshSel(); showError(msg.message); if (state) render(); }
@@ -126,6 +128,15 @@ function connect() {
 
 function send(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function onSeven(m) {
+  if (!state || !state.game || sel.card !== m.card || state.game.turn_seq !== m.turn_seq) return;
+  sel.seven = m;
+  sel.loading = false;
+  sel.splitPeg = null;
+  sel.msg = promptFor();
+  render();
 }
 
 function onState(s) {
@@ -263,7 +274,7 @@ function renderTable() {
     b.className = "playing-card" + (card.suit === "H" || card.suit === "D" ? " red-suit" : "");
     b.textContent = card.label;
     if (mine) {
-      const playable = g.skip_pending || g.moves[i].length > 0;
+      const playable = g.skip_pending || g.playable[i];
       b.classList.add(playable ? "playable" : "dim");
       if (sel.card === i) b.classList.add("selected");
       b.onclick = () => clickCard(i);
@@ -281,6 +292,7 @@ function renderTable() {
       : sel.msg || "Pick a card, then the peg to move.";
   }
   $("prompt").textContent = prompt;
+  $("done").classList.toggle("hidden", !(mine && sel.seven && sel.seven.left === 0 && !sel.pending && !sel.loading));
 
   // Game over
   $("over").classList.toggle("hidden", s.phase !== "over");
@@ -386,18 +398,7 @@ function holeXY(color, zone, index) {
 
 // The pegs as the player sees them: with a 7's chosen parts already moved.
 function previewPegs() {
-  const pegs = state.game.pegs.map((p) => ({ ...p }));
-  const find = (c, n) => pegs.find((p) => p.color === c && p.num === n);
-  for (const seg of sel.split) {
-    for (const [c, n] of seg.sent) {
-      const used = new Set(pegs.filter((q) => q.color === c && q.zone === "base").map((q) => q.index));
-      let slot = 0;
-      while (used.has(slot)) slot++;
-      Object.assign(find(c, n), { zone: "base", index: slot, blocking: false });
-    }
-    Object.assign(find(seg.color, seg.num), { zone: seg.dest.zone, index: seg.dest.index, blocking: false });
-  }
-  return pegs;
+  return sel.seven ? sel.seven.pegs : state.game.pegs;
 }
 
 function drawPieces() {
@@ -430,10 +431,10 @@ function drawPieces() {
 
   for (const [steps, seg] of splitOptions()) {
     const [x, y] = holeXY(seg.color, seg.dest.zone, seg.dest.index);
-    const m = svg("g", { class: "marker" }, gMarkers);
+    const m = svg("g", { class: steps < 0 ? "marker back" : "marker" }, gMarkers);
     svg("circle", { cx: x, cy: y, r: RING_R, stroke: HEX[seg.color] }, m);
     const t = svg("text", { x, y: y + 6, "text-anchor": "middle", transform: `rotate(${-rotation} ${x} ${y})` }, m);
-    t.textContent = steps;
+    t.textContent = steps < 0 ? `\u2212${-steps}` : steps;
     m.onclick = () => chooseSteps(steps);
   }
 }
@@ -442,11 +443,13 @@ function drawPieces() {
 
 const cardMoves = () => (sel.card === null ? [] : state.game.moves[sel.card]);
 const cardRank = () => state.game.hand[sel.card].rank;
-const sameSeg = (a, b) => a.color === b.color && a.num === b.num && a.steps === b.steps;
 
-function continuations() {
-  const n = sel.split.length;
-  return cardMoves().filter((m) => m.segments.length > n && sel.split.every((s, i) => sameSeg(s, m.segments[i])));
+// A 7 is chosen a piece at a time: any peg, any number of steps, the same peg again,
+// until all 7 are used. A moved peg can be clicked to take steps back. The server
+// works out what's allowed; the player presses Play 7 at the end.
+function requestSeven(segments) {
+  sel.loading = true;
+  send({ type: "seven", card: sel.card, segments, turn_seq: state.game.turn_seq });
 }
 
 function selectableKeys() {
@@ -459,9 +462,8 @@ function selectableKeys() {
     return set;
   }
   if (rank === "7") {
-    if (sel.splitPeg) return set;
-    const n = sel.split.length;
-    continuations().forEach((m) => set.add(key(m.segments[n].color, m.segments[n].num)));
+    if (sel.splitPeg || !sel.seven || sel.loading) return set;
+    sel.seven.choices.forEach((c) => set.add(key(c.color, c.num)));
     return set;
   }
   moves.forEach((m) => { if (m.peg !== null) set.add(key(ctl, m.peg)); });
@@ -471,13 +473,13 @@ function selectableKeys() {
   return set;
 }
 
+// For the peg chosen in a 7: steps (negative = take back) -> that choice.
 function splitOptions() {
   const opts = new Map();
-  if (!sel.splitPeg || !myTurn()) return opts;
-  const n = sel.split.length, [c, num] = sel.splitPeg;
-  for (const m of continuations()) {
-    const seg = m.segments[n];
-    if (seg.color === c && seg.num === num && !opts.has(seg.steps)) opts.set(seg.steps, seg);
+  if (!sel.splitPeg || !sel.seven || !myTurn()) return opts;
+  const [c, num] = sel.splitPeg;
+  for (const ch of sel.seven.choices) {
+    if (ch.color === c && ch.num === num) opts.set(ch.steps, ch);
   }
   return new Map([...opts.entries()].sort((a, b) => a[0] - b[0]));
 }
@@ -487,36 +489,48 @@ function promptFor() {
   const rank = cardRank();
   if (rank === "10") return "10: click your peg to swap";
   if (rank === "7") {
-    const left = 7 - sel.split.reduce((t, s) => t + s.steps, 0);
-    return `7: click a peg to move (${left} step${left === 1 ? "" : "s"} left)`;
+    if (!sel.seven) return "7: ...";
+    const left = sel.seven.left;
+    if (left === 0) return "7 used: press Play 7, or click a moved peg to take steps back";
+    const back = sel.seven.segments.length ? ", or a moved peg to take steps back" : "";
+    return `7: click a peg to move (${left} step${left === 1 ? "" : "s"} left)${back}`;
   }
   return `${state.game.hand[sel.card].label}: click the peg to move`;
 }
 
-function sendPlay(card, move) {
+function sendPlay(card, move, seven = null) {
   // Ignore further clicks until the server answers (a new state, or an error).
-  send({ type: "play", card, move, turn_seq: state.game.turn_seq });
+  const msg = { type: "play", card, move, turn_seq: state.game.turn_seq };
+  if (seven) msg.seven = seven;
+  send(msg);
   sel.pending = true;
   sel.msg = "Sending...";
   render();
 }
+
+function finishSeven() {
+  if (sel.pending || sel.loading || !sel.seven || sel.seven.left !== 0) return;
+  sendPlay(sel.card, null, sel.seven.segments);
+}
+$("done").onclick = finishSeven;
 
 function clickCard(i) {
   if (!myTurn() || sel.pending) return;
   const g = state.game;
   if (g.skip_pending) return sendPlay(i, null);
   if (sel.card === i) sel = freshSel();
-  else if (!g.moves[i].length) sel = freshSel(`${g.hand[i].label} can't move right now - pick another card`);
+  else if (!g.playable[i]) sel = freshSel(`${g.hand[i].label} can't move right now - pick another card`);
   else {
     sel = freshSel();
     sel.card = i;
+    if (cardRank() === "7") requestSeven([]);
     sel.msg = promptFor();
   }
   render();
 }
 
 function clickPeg(color, num) {
-  if (sel.pending) return;
+  if (sel.pending || sel.loading) return;
   if (sel.splitPeg && sel.splitPeg[0] === color && sel.splitPeg[1] === num) {
     sel.splitPeg = null;
     sel.msg = promptFor();
@@ -534,9 +548,10 @@ function clickPeg(color, num) {
   }
   if (rank === "7") {
     sel.splitPeg = [color, num];
-    const opts = splitOptions();
-    if (opts.size === 1) return chooseSteps([...opts.keys()][0]);
-    sel.msg = "Click where this peg goes (or press the number)";
+    const steps = [...splitOptions().keys()];
+    if (steps.length === 1 && steps[0] > 0) return chooseSteps(steps[0]);
+    sel.msg = steps.every((n) => n < 0) ? "Click where to take this peg back to"
+      : "Click where this peg goes (or press the number)";
     return render();
   }
   const peg = g.pegs.find((p) => p.color === color && p.num === num);
@@ -547,20 +562,18 @@ function clickPeg(color, num) {
 }
 
 function chooseSteps(steps) {
-  if (sel.pending) return;
-  const opts = splitOptions();
-  if (!opts.has(steps)) return;
-  sel.split.push(opts.get(steps));
+  if (sel.pending || sel.loading) return;
+  const choice = splitOptions().get(steps);
+  if (!choice) return;
   sel.splitPeg = null;
-  const idx = cardMoves().findIndex((m) => m.segments.length === sel.split.length && sel.split.every((s, i) => sameSeg(s, m.segments[i])));
-  if (idx >= 0) return sendPlay(sel.card, idx);
-  sel.msg = promptFor();
+  requestSeven(choice.segments);
   render();
 }
 
 document.addEventListener("keydown", (e) => {
   if (!state || state.phase !== "playing" || e.target.tagName === "INPUT") return;
   if (e.key === "Escape") { sel = freshSel(); render(); }
+  if (e.key === "Enter") finishSeven();
   const n = parseInt(e.key, 10);
   if (n >= 1 && n <= 9) {
     if (sel.splitPeg) chooseSteps(n);
