@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aggervation.cards import Card
+from aggervation.models import PegPos
 from aggervation.rules import position_after
 from aggervation.web import rooms as rooms_mod
 from aggervation.web.rooms import (
@@ -293,6 +294,32 @@ def test_pages_and_layout_served(client):
     assert "AGGRAVATION" in client.get("/g/XU8R-D4FG").text
     layout = client.get("/api/layout").json()
     assert len(layout["track"]) == 96
+
+
+def test_browsers_pick_up_new_versions(client):
+    """After a redeploy, a browser mustn't keep running an old app.js against the new server."""
+    page = client.get("/")
+    assert page.headers["cache-control"] == "no-cache"
+    assert re.search(r'/static/app\.js\?v=[0-9a-f]{12}"', page.text)
+    assert re.search(r'/static/style\.css\?v=[0-9a-f]{12}"', page.text)
+    script = client.get("/static/app.js")
+    assert script.status_code == 200 and script.headers["cache-control"] == "no-cache"
+
+
+def test_seven_playable_after_swap_onto_green_start():
+    """From a real game: Green swapped Red's peg onto Green's start (24); Red has another on 25."""
+    room, game = seven_room()
+    for num, hole in ((0, 25), (2, 24)):
+        peg = game.player("RED").pegs[num]
+        peg.pos, peg.travelled, peg.blocking = position_after("RED", hole), hole, False
+    peg = game.player("RED").pegs[1]
+    peg.pos, peg.travelled = PegPos.base(1), 0
+    green = game.player("GREEN").pegs[2]
+    green.pos, green.travelled, green.blocking = position_after("GREEN", 72), 72, False  # Red's start
+    view = room.view("host")["game"]
+    assert view["playable"][0] is True
+    nums = {c["num"] for c in room.seven("host", 0, [], room.turn_seq)["choices"]}
+    assert nums == {0, 2}
 
 
 def test_create_join_and_start_over_websockets(client):
